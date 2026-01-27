@@ -151,13 +151,13 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $ortLib = Resolve-Path "models/onnxruntime-win-x64-${env:ORT_VERSION}/lib"
-          # Prepend ORT lib to PATH to ensure correct DLL is loaded
-          $env:PATH = "$ortLib;$env:PATH"
-          $exe = "build-ci/${{ matrix.config }}/cpp-ort-aligner.exe"
+          # Copy ORT DLL to exe directory to ensure correct version is loaded
+          $ortDll = "models/onnxruntime-win-x64-${env:ORT_VERSION}/lib/onnxruntime.dll"
+          $exeDir = "build-ci/${{ matrix.config }}"
+          Copy-Item $ortDll $exeDir
+          $exe = "$exeDir/cpp-ort-aligner.exe"
           Write-Host "Running: $exe"
-          Write-Host "ORT lib path: $ortLib"
-          # Run and capture exit code (ignore stderr which may have ORT version warnings)
+          # Run and capture exit code
           $proc = Start-Process -FilePath $exe -NoNewWindow -Wait -PassThru
           $code = $proc.ExitCode
           Write-Host "Exit code: $code"
