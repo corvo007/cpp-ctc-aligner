@@ -114,9 +114,11 @@ int main(int argc, char** argv) {
 
   const fs::path model_onnx = args.model_dir / "model.onnx";
   const fs::path vocab_json_path = args.model_dir / "vocab.json";
-  const std::string model_path = model_onnx.string();
-  const std::wstring wmodel_path(model_path.begin(), model_path.end());
-  Ort::Session session(env, wmodel_path.c_str(), opts);
+#ifdef _WIN32
+  Ort::Session session(env, model_onnx.wstring().c_str(), opts);
+#else
+  Ort::Session session(env, model_onnx.string().c_str(), opts);
+#endif
 
   auto emissions = generate_emissions_ort(
       session,
