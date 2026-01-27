@@ -1,0 +1,23 @@
+__pycache__
+*.egg-info
+*.so
+.conda
+build
+dist
+ffmpeg.exe
+*.wav
+*.srt
+\target
+\libtorch
+\models
+.vscode/
+.claude/
+# CLAUDE.md
+nul
+**/build-*/
+**/*.log
+**/*_debug/
+**/output*_debug*/
+cpp_*.txt
+test_stdout.txt
+test_stderr.txt
