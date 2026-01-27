@@ -96,6 +96,10 @@ jobs:
           mkdir -p models
           tar -xzf "$ZIP" -C models
 
+      - name: Setup MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Configure (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
