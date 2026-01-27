@@ -155,7 +155,12 @@ jobs:
           $ortLib = Resolve-Path "models/onnxruntime-win-x64-${env:ORT_VERSION}/lib"
           $env:PATH = "$ortLib;$env:PATH"
           $exe = "build-ci/${{ matrix.config }}/cpp-ort-aligner.exe"
-          & $exe 2>$null; if ($LASTEXITCODE -ne 2) { throw "Unexpected exit code: $LASTEXITCODE (expected 2 from usage)" }
+          Write-Host "Running: $exe"
+          Write-Host "PATH includes: $ortLib"
+          & $exe
+          $code = $LASTEXITCODE
+          Write-Host "Exit code: $code"
+          if ($code -ne 2) { throw "Unexpected exit code: $code (expected 2 from usage)" }
 
       - name: Smoke test (Linux)
         if: runner.os == 'Linux'
