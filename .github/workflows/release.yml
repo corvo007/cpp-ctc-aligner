@@ -1,0 +1,200 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            generator: "Ninja Multi-Config"
+            config: Release
+            artifact_name: cpp-ort-aligner-windows-x64
+            ort_pkg: onnxruntime-win-x64
+          - os: ubuntu-latest
+            generator: Ninja
+            config: Release
+            artifact_name: cpp-ort-aligner-linux-x64
+            ort_pkg: onnxruntime-linux-x64
+          - os: macos-latest
+            generator: Ninja
+            config: Release
+            artifact_name: cpp-ort-aligner-macos-universal2
+            ort_pkg: onnxruntime-osx-universal2
+
+    env:
+      ORT_VERSION: "1.23.2"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build cmake g++
+
+      - name: Install build deps (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew update
+          brew install ninja cmake
+
+      - name: Install build deps (Windows)
+        if: runner.os == 'Windows'
+        uses: seanmiddleditch/gha-setup-ninja@v5
+
+      - name: Download ONNX Runtime (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $zip = "onnxruntime-win-x64-${env:ORT_VERSION}.zip"
+          $url = "https://github.com/microsoft/onnxruntime/releases/download/v${env:ORT_VERSION}/$zip"
+          $dst = Join-Path $env:RUNNER_TEMP $zip
+          Invoke-WebRequest -Uri $url -OutFile $dst
+          Expand-Archive -Path $dst -DestinationPath "models" -Force
+
+      - name: Download ONNX Runtime (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euxo pipefail
+          ZIP="onnxruntime-linux-x64-${ORT_VERSION}.tgz"
+          URL="https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ZIP}"
+          curl -L "$URL" -o "$ZIP"
+          mkdir -p models
+          tar -xzf "$ZIP" -C models
+
+      - name: Download ONNX Runtime (macOS universal2)
+        if: runner.os == 'macOS'
+        run: |
+          set -euxo pipefail
+          ZIP="onnxruntime-osx-universal2-${ORT_VERSION}.tgz"
+          URL="https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ZIP}"
+          curl -L "$URL" -o "$ZIP"
+          mkdir -p models
+          tar -xzf "$ZIP" -C models
+
+      - name: Setup MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $ortDir = Resolve-Path "models/onnxruntime-win-x64-${env:ORT_VERSION}"
+          cmake -S . -B build -G "${{ matrix.generator }}" `
+            -DUSE_SYSTEM_ORT=ON `
+            -DONNXRUNTIME_DIR="$ortDir"
+
+      - name: Configure (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euxo pipefail
+          ORT_DIR="$(pwd)/models/onnxruntime-linux-x64-${ORT_VERSION}"
+          cmake -S . -B build -G "${{ matrix.generator }}" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DUSE_SYSTEM_ORT=ON \
+            -DONNXRUNTIME_DIR="${ORT_DIR}"
+
+      - name: Configure (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euxo pipefail
+          ORT_DIR="$(pwd)/models/onnxruntime-osx-universal2-${ORT_VERSION}"
+          cmake -S . -B build -G "${{ matrix.generator }}" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DUSE_SYSTEM_ORT=ON \
+            -DONNXRUNTIME_DIR="${ORT_DIR}"
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          cmake --build build --config "${{ matrix.config }}" --parallel 4
+
+      - name: Build (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          set -euxo pipefail
+          cmake --build build --config "${{ matrix.config }}" --parallel 4
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = "${{ github.ref_name }}"
+          $pkgDir = "${{ matrix.artifact_name }}-${version}"
+          New-Item -ItemType Directory -Path $pkgDir -Force
+          Copy-Item "build/${{ matrix.config }}/cpp-ort-aligner.exe" $pkgDir/
+          Copy-Item "models/onnxruntime-win-x64-${env:ORT_VERSION}/lib/onnxruntime.dll" $pkgDir/
+          Compress-Archive -Path $pkgDir -DestinationPath "${pkgDir}.zip"
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euxo pipefail
+          VERSION="${{ github.ref_name }}"
+          PKG_DIR="${{ matrix.artifact_name }}-${VERSION}"
+          mkdir -p "$PKG_DIR"
+          cp build/cpp-ort-aligner "$PKG_DIR/"
+          tar -czvf "${PKG_DIR}.tar.gz" "$PKG_DIR"
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euxo pipefail
+          VERSION="${{ github.ref_name }}"
+          PKG_DIR="${{ matrix.artifact_name }}-${VERSION}"
+          mkdir -p "$PKG_DIR"
+          cp build/cpp-ort-aligner "$PKG_DIR/"
+          tar -czvf "${PKG_DIR}.tar.gz" "$PKG_DIR"
+
+      - name: Upload artifact (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_name }}-${{ github.ref_name }}.zip
+
+      - name: Upload artifact (Linux/macOS)
+        if: runner.os != 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_name }}-${{ github.ref_name }}.tar.gz
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/**/*.zip
+            artifacts/**/*.tar.gz
+          generate_release_notes: true
