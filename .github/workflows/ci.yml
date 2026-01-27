@@ -32,9 +32,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            cpp-ort-aligner/models/onnxruntime-win-x64-${{ env.ORT_VERSION }}
-            cpp-ort-aligner/models/onnxruntime-linux-x64-${{ env.ORT_VERSION }}
-            cpp-ort-aligner/models/onnxruntime-osx-universal2-${{ env.ORT_VERSION }}
+            models/onnxruntime-win-x64-${{ env.ORT_VERSION }}
+            models/onnxruntime-linux-x64-${{ env.ORT_VERSION }}
+            models/onnxruntime-osx-universal2-${{ env.ORT_VERSION }}
           key: ort-${{ env.ORT_VERSION }}-${{ runner.os }}
 
       - name: Install build deps (Ubuntu)
@@ -58,7 +58,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          if (Test-Path "cpp-ort-aligner/models/onnxruntime-win-x64-${env:ORT_VERSION}") {
+          if (Test-Path "models/onnxruntime-win-x64-${env:ORT_VERSION}") {
             Write-Host "ORT already present (cache hit)"
             exit 0
           }
@@ -66,43 +66,43 @@ jobs:
           $url = "https://github.com/microsoft/onnxruntime/releases/download/v${env:ORT_VERSION}/$zip"
           $dst = Join-Path $env:RUNNER_TEMP $zip
           Invoke-WebRequest -Uri $url -OutFile $dst
-          Expand-Archive -Path $dst -DestinationPath "cpp-ort-aligner/models" -Force
+          Expand-Archive -Path $dst -DestinationPath "models" -Force
 
       - name: Download ONNX Runtime (Linux)
         if: runner.os == 'Linux'
         run: |
           set -euxo pipefail
-          if [ -d "cpp-ort-aligner/models/onnxruntime-linux-x64-${ORT_VERSION}" ]; then
+          if [ -d "models/onnxruntime-linux-x64-${ORT_VERSION}" ]; then
             echo "ORT already present (cache hit)"
             exit 0
           fi
           ZIP="onnxruntime-linux-x64-${ORT_VERSION}.tgz"
           URL="https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ZIP}"
           curl -L "$URL" -o "$ZIP"
-          mkdir -p cpp-ort-aligner/models
-          tar -xzf "$ZIP" -C cpp-ort-aligner/models
+          mkdir -p models
+          tar -xzf "$ZIP" -C models
 
       - name: Download ONNX Runtime (macOS universal2)
         if: runner.os == 'macOS'
         run: |
           set -euxo pipefail
-          if [ -d "cpp-ort-aligner/models/onnxruntime-osx-universal2-${ORT_VERSION}" ]; then
+          if [ -d "models/onnxruntime-osx-universal2-${ORT_VERSION}" ]; then
             echo "ORT already present (cache hit)"
             exit 0
           fi
           ZIP="onnxruntime-osx-universal2-${ORT_VERSION}.tgz"
           URL="https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ZIP}"
           curl -L "$URL" -o "$ZIP"
-          mkdir -p cpp-ort-aligner/models
-          tar -xzf "$ZIP" -C cpp-ort-aligner/models
+          mkdir -p models
+          tar -xzf "$ZIP" -C models
 
       - name: Configure (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $ortDir = Resolve-Path "cpp-ort-aligner/models/onnxruntime-win-x64-${env:ORT_VERSION}"
-          cmake -S cpp-ort-aligner -B cpp-ort-aligner/build-ci -G "${{ matrix.generator }}" `
+          $ortDir = Resolve-Path "models/onnxruntime-win-x64-${env:ORT_VERSION}"
+          cmake -S . -B build-ci -G "${{ matrix.generator }}" `
             -DUSE_SYSTEM_ORT=ON `
             -DONNXRUNTIME_DIR="$ortDir"
 
@@ -111,14 +111,14 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          cmake --build cpp-ort-aligner/build-ci --config "${{ matrix.config }}" --parallel 4
+          cmake --build build-ci --config "${{ matrix.config }}" --parallel 4
 
       - name: Configure (Linux)
         if: runner.os == 'Linux'
         run: |
           set -euxo pipefail
-          ORT_DIR="$(pwd)/cpp-ort-aligner/models/onnxruntime-linux-x64-${ORT_VERSION}"
-          cmake -S cpp-ort-aligner -B cpp-ort-aligner/build-ci -G "${{ matrix.generator }}" \
+          ORT_DIR="$(pwd)/models/onnxruntime-linux-x64-${ORT_VERSION}"
+          cmake -S . -B build-ci -G "${{ matrix.generator }}" \
             -DUSE_SYSTEM_ORT=ON \
             -DONNXRUNTIME_DIR="${ORT_DIR}"
 
@@ -126,8 +126,8 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           set -euxo pipefail
-          ORT_DIR="$(pwd)/cpp-ort-aligner/models/onnxruntime-osx-universal2-${ORT_VERSION}"
-          cmake -S cpp-ort-aligner -B cpp-ort-aligner/build-ci -G "${{ matrix.generator }}" \
+          ORT_DIR="$(pwd)/models/onnxruntime-osx-universal2-${ORT_VERSION}"
+          cmake -S . -B build-ci -G "${{ matrix.generator }}" \
             -DUSE_SYSTEM_ORT=ON \
             -DONNXRUNTIME_DIR="${ORT_DIR}"
 
@@ -135,22 +135,22 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           set -euxo pipefail
-          cmake --build cpp-ort-aligner/build-ci --config "${{ matrix.config }}" --parallel 4
+          cmake --build build-ci --config "${{ matrix.config }}" --parallel 4
 
       - name: Build (macOS)
         if: runner.os == 'macOS'
         run: |
           set -euxo pipefail
-          cmake --build cpp-ort-aligner/build-ci --config "${{ matrix.config }}" --parallel 4
+          cmake --build build-ci --config "${{ matrix.config }}" --parallel 4
 
       - name: Smoke test (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $ortLib = Resolve-Path "cpp-ort-aligner/models/onnxruntime-win-x64-${env:ORT_VERSION}/lib"
+          $ortLib = Resolve-Path "models/onnxruntime-win-x64-${env:ORT_VERSION}/lib"
           $env:PATH = "$ortLib;$env:PATH"
-          $exe = "cpp-ort-aligner/build-ci/${{ matrix.config }}/cpp-ort-aligner.exe"
+          $exe = "build-ci/${{ matrix.config }}/cpp-ort-aligner.exe"
           & $exe 2>$null; if ($LASTEXITCODE -ne 2) { throw "Unexpected exit code: $LASTEXITCODE (expected 2 from usage)" }
 
       - name: Smoke test (Linux)
@@ -159,7 +159,7 @@ jobs:
           set -euxo pipefail
           # Expect usage exit code 2 when no args are provided.
           set +e
-          ./cpp-ort-aligner/build-ci/cpp-ort-aligner
+          ./build-ci/cpp-ort-aligner
           code=$?
           set -e
           if [ "$code" -ne 2 ]; then
@@ -173,7 +173,7 @@ jobs:
           set -euxo pipefail
           # Expect usage exit code 2 when no args are provided.
           set +e
-          ./cpp-ort-aligner/build-ci/cpp-ort-aligner
+          ./build-ci/cpp-ort-aligner
           code=$?
           set -e
           if [ "$code" -ne 2 ]; then
