@@ -25,8 +25,12 @@ namespace fs = std::filesystem;
 #include "vocab_json.h"
 #include "audio_decode.h"
 #include "kanji_pinyin.h"
+#include "stacktrace.h"
 
 // Emissions generation now lives in emissions.cpp; keep main minimal.
+
+// Forward declaration
+static int run_alignment(int argc, char** argv);
 
 static std::string json_quote_str(const std::string& s) {
   // Minimal JSON string escaping (enough for our debug artifacts).
@@ -60,6 +64,24 @@ static std::string json_quote_str(const std::string& s) {
 }
 
 int main(int argc, char** argv) {
+  try {
+    return run_alignment(argc, argv);
+  } catch (const Ort::Exception& e) {
+    std::cerr << "\n[ERROR] ONNX Runtime error: " << e.what() << "\n";
+    std::cerr << stacktrace::capture_string(0) << "\n";
+    return 1;
+  } catch (const std::exception& e) {
+    std::cerr << "\n[ERROR] " << e.what() << "\n";
+    std::cerr << stacktrace::capture_string(0) << "\n";
+    return 1;
+  } catch (...) {
+    std::cerr << "\n[ERROR] Unknown exception occurred\n";
+    std::cerr << stacktrace::capture_string(0) << "\n";
+    return 1;
+  }
+}
+
+static int run_alignment(int argc, char** argv) {
   CliArgs args;
   int exit_code = 0;
   if (!parse_cli_args(argc, argv, args, exit_code)) {
@@ -312,13 +334,30 @@ int main(int argc, char** argv) {
           seg.end_sec = last.end_sec;
 
           // Compute average confidence score from word scores in this segment
-          float score_sum = 0.0f;
-          size_t score_count = 0;
+          // Match Python: convert log_prob to linear probability, then average
+          std::vector<float> token_probs;
+          token_probs.reserve(end_idx - start_idx + 1);
           for (size_t wi = start_idx; wi <= end_idx && wi < word_ts.size(); ++wi) {
-            score_sum += word_ts[wi].score;
-            ++score_count;
+            const auto& wt = word_ts[wi];
+            // wt.score is sum of log_prob over frames for this token
+            float token_total_log_prob = wt.score;
+            // Approximate frame count (stride is typically 20ms)
+            float token_duration = static_cast<float>(wt.end_sec - wt.start_sec);
+            int n_frames = std::max(1, static_cast<int>(token_duration / 0.02f));
+            // Average log_prob per frame
+            float token_avg_log_prob = token_total_log_prob / static_cast<float>(n_frames);
+            // Convert to linear probability (0.0 - 1.0)
+            float token_prob = std::min(1.0f, std::exp(token_avg_log_prob));
+            token_probs.push_back(token_prob);
           }
-          seg.score = (score_count > 0) ? (score_sum / static_cast<float>(score_count)) : 0.0f;
+          // Final score is arithmetic mean of token probabilities
+          if (!token_probs.empty()) {
+            float prob_sum = 0.0f;
+            for (float p : token_probs) prob_sum += p;
+            seg.score = prob_sum / static_cast<float>(token_probs.size());
+          } else {
+            seg.score = 0.0f;
+          }
 
           char_idx = end_idx + 1;
         }
@@ -443,8 +482,8 @@ int main(int argc, char** argv) {
         }
       }
   } catch (const std::exception& e) {
-    log.error(std::string("get_spans_str failed: ") + e.what());
-    return 1;
+    log.error(std::string("Alignment failed: ") + e.what());
+    throw;  // Re-throw to be caught by top-level handler with stack trace
   }
 
   return 0;

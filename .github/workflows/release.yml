@@ -149,18 +149,33 @@ jobs:
           $pkgDir = "${{ matrix.artifact_name }}-${version}"
           New-Item -ItemType Directory -Path $pkgDir -Force
           Copy-Item "build/${{ matrix.config }}/cpp-ort-aligner.exe" $pkgDir/
+          Copy-Item "build/${{ matrix.config }}/cpp-ort-aligner.pdb" $pkgDir/
           Copy-Item "models/${{ matrix.ort_pkg }}-${env:ORT_VERSION}/lib/onnxruntime.dll" $pkgDir/
           Copy-Item "data/Chinese_to_Pinyin.txt" $pkgDir/
           Compress-Archive -Path $pkgDir -DestinationPath "${pkgDir}.zip"
 
-      - name: Package (Linux/macOS)
-        if: runner.os != 'Windows'
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euxo pipefail
+          VERSION="${{ github.ref_name }}"
+          PKG_DIR="${{ matrix.artifact_name }}-${VERSION}"
+          mkdir -p "$PKG_DIR"
+          # Keep debug symbols embedded in binary
+          cp build/cpp-ort-aligner "$PKG_DIR/"
+          cp data/Chinese_to_Pinyin.txt "$PKG_DIR/"
+          tar -czvf "${PKG_DIR}.tar.gz" "$PKG_DIR"
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
         run: |
           set -euxo pipefail
           VERSION="${{ github.ref_name }}"
           PKG_DIR="${{ matrix.artifact_name }}-${VERSION}"
           mkdir -p "$PKG_DIR"
           cp build/cpp-ort-aligner "$PKG_DIR/"
+          # Generate dSYM debug symbols
+          dsymutil "$PKG_DIR/cpp-ort-aligner" -o "$PKG_DIR/cpp-ort-aligner.dSYM"
           cp data/Chinese_to_Pinyin.txt "$PKG_DIR/"
           tar -czvf "${PKG_DIR}.tar.gz" "$PKG_DIR"
 

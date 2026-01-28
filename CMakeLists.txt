@@ -23,6 +23,7 @@ add_executable(cpp-ort-aligner
   src/span_align.cpp
   src/postprocess.cpp
   src/srt_io.cpp
+  src/stacktrace.cpp
   src/text_preprocess.cpp
   src/vocab_json.cpp
 )
@@ -44,6 +45,16 @@ endif()
 if (MSVC)
   target_compile_options(cpp-ort-aligner PRIVATE /W4 /permissive- /utf-8)
   target_compile_definitions(cpp-ort-aligner PRIVATE _CRT_SECURE_NO_WARNINGS)
+  target_link_libraries(cpp-ort-aligner PRIVATE dbghelp)
+  # Generate debug info even in Release for better stack traces
+  target_compile_options(cpp-ort-aligner PRIVATE $<$<CONFIG:Release>:/Zi>)
+  target_link_options(cpp-ort-aligner PRIVATE $<$<CONFIG:Release>:/DEBUG>)
 else()
   target_compile_options(cpp-ort-aligner PRIVATE -Wall -Wextra -Wpedantic)
+  # Enable -rdynamic for better stack traces on Linux/macOS
+  if (NOT APPLE)
+    target_link_options(cpp-ort-aligner PRIVATE -rdynamic)
+  endif()
+  # Generate debug info even in Release for better stack traces
+  target_compile_options(cpp-ort-aligner PRIVATE $<$<CONFIG:Release>:-g>)
 endif()
