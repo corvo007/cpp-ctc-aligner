@@ -1,7 +1,37 @@
 cmake_minimum_required(VERSION 3.20)
-project(cpp_ort_aligner LANGUAGES CXX)
+project(cpp_ort_aligner VERSION 0.1.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
+
+# Get git hash for version info
+find_package(Git QUIET)
+if(GIT_FOUND)
+  execute_process(
+    COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    OUTPUT_VARIABLE GIT_HASH
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+  )
+  execute_process(
+    COMMAND ${GIT_EXECUTABLE} status --porcelain
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    OUTPUT_VARIABLE GIT_STATUS
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+  )
+  if(NOT "${GIT_STATUS}" STREQUAL "")
+    set(GIT_HASH "${GIT_HASH}-dirty")
+  endif()
+else()
+  set(GIT_HASH "unknown")
+endif()
+
+configure_file(
+  ${CMAKE_SOURCE_DIR}/src/version.h.in
+  ${CMAKE_BINARY_DIR}/generated/version.h
+  @ONLY
+)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(USE_SYSTEM_ORT "Use system-installed ONNX Runtime" ON)
@@ -9,6 +39,7 @@ option(USE_SYSTEM_ORT "Use system-installed ONNX Runtime" ON)
 # Include directory for nlohmann/json and other headers
 include_directories(${CMAKE_SOURCE_DIR}/include)
 include_directories(${CMAKE_SOURCE_DIR}/src)
+include_directories(${CMAKE_BINARY_DIR}/generated)
 
 add_executable(cpp-ort-aligner
   src/cli_args.cpp

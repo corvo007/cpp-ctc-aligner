@@ -1,4 +1,5 @@
 #include "cli_args.h"
+#include "version.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -42,6 +43,10 @@ static fs::path get_exe_dir() {
 
 static bool is_flag(const std::string& s) { return !s.empty() && s[0] == '-'; }
 
+void print_version() {
+  std::cout << "cpp-ort-aligner " << PROJECT_VERSION << " (" << GIT_HASH << ")\n";
+}
+
 void print_usage() {
   std::cerr << "Usage:\n";
   std::cerr << "  cpp-ort-aligner --audio <path> --model <model_dir> [--srt <path> | --json-input <path|-}] [options]\n";
@@ -61,6 +66,8 @@ void print_usage() {
   std::cerr << "\nDebug:\n";
   std::cerr << "  --debug, -d           Enable debug mode and save intermediate files\n";
   std::cerr << "  --debug-dir           Debug output directory (default: <base>_debug)\n";
+  std::cerr << "\nOther:\n";
+  std::cerr << "  --version, -v         Show version and exit\n";
 }
 
 static std::string require_value(int& i, int argc, char** argv, const std::string& flag) {
@@ -93,7 +100,11 @@ bool parse_cli_args(int argc, char** argv, CliArgs& out, int& exit_code) {
 
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
-    if (a == "--audio" || a == "-a") {
+    if (a == "--version" || a == "-v") {
+      print_version();
+      exit_code = 0;
+      return false;
+    } else if (a == "--audio" || a == "-a") {
       out.audio = fs::path(require_value(i, argc, argv, a));
     } else if (a == "--model" || a == "-m") {
       out.model_dir = fs::path(require_value(i, argc, argv, a));

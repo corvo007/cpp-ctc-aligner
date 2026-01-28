@@ -26,4 +26,5 @@ struct CliArgs {
 bool parse_cli_args(int argc, char** argv, CliArgs& out, int& exit_code);
 
 void print_usage();
+void print_version();
 
