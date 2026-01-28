@@ -26,7 +26,7 @@ A standalone C++ tool for CTC forced alignment of subtitles to audio.
    - `cpp-ort-aligner/models/mms-300m-1130-forced-aligner/vocab.json`
 
 4. **Kanji pinyin table** (for CJK romanization)
-   - `<model_dir>/Chinese_to_Pinyin.txt` (default location)
+   - `<exe_dir>/Chinese_to_Pinyin.txt` (default location, bundled in release packages)
    - Or specify custom path with `--pinyin-table`
 
 ## Build
@@ -74,7 +74,7 @@ Input/Output:
 Alignment options:
   --language, -l        ISO 639-3 code (default: eng)
   --romanize, -r        Enable romanization
-  --pinyin-table        Kanji-to-pinyin table path (default: <model_dir>/Chinese_to_Pinyin.txt)
+  --pinyin-table        Kanji-to-pinyin table path (default: <exe_dir>/Chinese_to_Pinyin.txt)
   --batch-size, -b      Inference batch size (default: 4)
   --threads             ORT intra-op threads (default: auto)
 
@@ -155,5 +155,5 @@ For CJK languages, use `--romanize` to enable romanization.
 ## Troubleshooting
 
 - **Missing DLLs**: Ensure `onnxruntime.dll` is next to the executable
-- **Kanji table not found**: Place `Chinese_to_Pinyin.txt` in the model directory, or use `--pinyin-table` to specify a custom path
+- **Kanji table not found**: Place `Chinese_to_Pinyin.txt` next to the executable, or use `--pinyin-table` to specify a custom path
 - **Audio decode fails**: Verify the audio file is not corrupted and is a supported format

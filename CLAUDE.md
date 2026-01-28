@@ -83,4 +83,4 @@ Required in `models/mms-300m-1130-forced-aligner/`:
 - `model.onnx` + `model.onnx.data`
 - `vocab.json`
 
-For CJK romanization: `data/Chinese_to_Pinyin.txt`
+For CJK romanization: `Chinese_to_Pinyin.txt` (bundled in release packages, placed next to exe)

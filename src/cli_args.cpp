@@ -6,7 +6,39 @@
 #include <stdexcept>
 #include <vector>
 
+#ifdef _WIN32
+#include <windows.h>
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>
+#else
+#include <unistd.h>
+#include <limits.h>
+#endif
+
 namespace fs = std::filesystem;
+
+static fs::path get_exe_dir() {
+#ifdef _WIN32
+  wchar_t path[MAX_PATH];
+  GetModuleFileNameW(nullptr, path, MAX_PATH);
+  return fs::path(path).parent_path();
+#elif defined(__APPLE__)
+  char path[PATH_MAX];
+  uint32_t size = sizeof(path);
+  if (_NSGetExecutablePath(path, &size) == 0) {
+    return fs::canonical(path).parent_path();
+  }
+  return fs::current_path();
+#else
+  char path[PATH_MAX];
+  ssize_t len = readlink("/proc/self/exe", path, sizeof(path) - 1);
+  if (len != -1) {
+    path[len] = '\0';
+    return fs::path(path).parent_path();
+  }
+  return fs::current_path();
+#endif
+}
 
 static bool is_flag(const std::string& s) { return !s.empty() && s[0] == '-'; }
 
@@ -23,7 +55,7 @@ void print_usage() {
   std::cerr << "\nAlignment options:\n";
   std::cerr << "  --language, -l        ISO 639-3 code (default: eng)\n";
   std::cerr << "  --romanize, -r        Enable romanization\n";
-  std::cerr << "  --pinyin-table        Kanji-to-pinyin table path (default: <model_dir>/Chinese_to_Pinyin.txt)\n";
+  std::cerr << "  --pinyin-table        Kanji-to-pinyin table path (default: <exe_dir>/Chinese_to_Pinyin.txt)\n";
   std::cerr << "  --batch-size, -b      Inference batch size (default: 4)\n";
   std::cerr << "  --threads             ORT intra-op threads (default: auto)\n";
   std::cerr << "\nDebug:\n";
@@ -134,9 +166,9 @@ bool parse_cli_args(int argc, char** argv, CliArgs& out, int& exit_code) {
     out.debug_dir = default_debug_dir(out);
   }
 
-  // Default pinyin table path: <model_dir>/Chinese_to_Pinyin.txt
+  // Default pinyin table path: <exe_dir>/Chinese_to_Pinyin.txt
   if (out.pinyin_table.empty() && out.romanize) {
-    out.pinyin_table = out.model_dir / "Chinese_to_Pinyin.txt";
+    out.pinyin_table = get_exe_dir() / "Chinese_to_Pinyin.txt";
   }
 
   return true;
