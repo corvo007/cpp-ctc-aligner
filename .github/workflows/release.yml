@@ -147,12 +147,15 @@ jobs:
           $ErrorActionPreference = "Stop"
           $version = "${{ github.ref_name }}"
           $pkgDir = "${{ matrix.artifact_name }}-${version}"
+          $symbolsDir = "${{ matrix.artifact_name }}-${version}-symbols"
           New-Item -ItemType Directory -Path $pkgDir -Force
+          New-Item -ItemType Directory -Path $symbolsDir -Force
           Copy-Item "build/${{ matrix.config }}/cpp-ort-aligner.exe" $pkgDir/
-          Copy-Item "build/${{ matrix.config }}/cpp-ort-aligner.pdb" $pkgDir/
+          Copy-Item "build/${{ matrix.config }}/cpp-ort-aligner.pdb" $symbolsDir/
           Copy-Item "models/${{ matrix.ort_pkg }}-${env:ORT_VERSION}/lib/onnxruntime.dll" $pkgDir/
           Copy-Item "data/Chinese_to_Pinyin.txt" $pkgDir/
           Compress-Archive -Path $pkgDir -DestinationPath "${pkgDir}.zip"
+          Compress-Archive -Path $symbolsDir -DestinationPath "${symbolsDir}.zip"
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
@@ -160,11 +163,17 @@ jobs:
           set -euxo pipefail
           VERSION="${{ github.ref_name }}"
           PKG_DIR="${{ matrix.artifact_name }}-${VERSION}"
-          mkdir -p "$PKG_DIR"
-          # Keep debug symbols embedded in binary
-          cp build/cpp-ort-aligner "$PKG_DIR/"
+          SYMBOLS_DIR="${{ matrix.artifact_name }}-${VERSION}-symbols"
+          mkdir -p "$PKG_DIR" "$SYMBOLS_DIR"
+          # Extract debug symbols to separate file
+          objcopy --only-keep-debug build/cpp-ort-aligner "$SYMBOLS_DIR/cpp-ort-aligner.debug"
+          # Strip debug symbols from binary
+          objcopy --strip-debug build/cpp-ort-aligner "$PKG_DIR/cpp-ort-aligner"
+          # Add debug link to stripped binary (optional, helps debuggers find symbols)
+          objcopy --add-gnu-debuglink="$SYMBOLS_DIR/cpp-ort-aligner.debug" "$PKG_DIR/cpp-ort-aligner"
           cp data/Chinese_to_Pinyin.txt "$PKG_DIR/"
           tar -czvf "${PKG_DIR}.tar.gz" "$PKG_DIR"
+          tar -czvf "${SYMBOLS_DIR}.tar.gz" "$SYMBOLS_DIR"
 
       - name: Package (macOS)
         if: runner.os == 'macOS'
@@ -172,12 +181,16 @@ jobs:
           set -euxo pipefail
           VERSION="${{ github.ref_name }}"
           PKG_DIR="${{ matrix.artifact_name }}-${VERSION}"
-          mkdir -p "$PKG_DIR"
+          SYMBOLS_DIR="${{ matrix.artifact_name }}-${VERSION}-symbols"
+          mkdir -p "$PKG_DIR" "$SYMBOLS_DIR"
           cp build/cpp-ort-aligner "$PKG_DIR/"
-          # Generate dSYM debug symbols
-          dsymutil "$PKG_DIR/cpp-ort-aligner" -o "$PKG_DIR/cpp-ort-aligner.dSYM"
+          # Generate dSYM debug symbols in separate directory
+          dsymutil "$PKG_DIR/cpp-ort-aligner" -o "$SYMBOLS_DIR/cpp-ort-aligner.dSYM"
+          # Strip debug symbols from binary
+          strip "$PKG_DIR/cpp-ort-aligner"
           cp data/Chinese_to_Pinyin.txt "$PKG_DIR/"
           tar -czvf "${PKG_DIR}.tar.gz" "$PKG_DIR"
+          tar -czvf "${SYMBOLS_DIR}.tar.gz" "$SYMBOLS_DIR"
 
       - name: Upload artifact (Windows)
         if: runner.os == 'Windows'
@@ -186,12 +199,26 @@ jobs:
           name: ${{ matrix.artifact_name }}
           path: ${{ matrix.artifact_name }}-${{ github.ref_name }}.zip
 
+      - name: Upload symbols artifact (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}-symbols
+          path: ${{ matrix.artifact_name }}-${{ github.ref_name }}-symbols.zip
+
       - name: Upload artifact (Linux/macOS)
         if: runner.os != 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
           path: ${{ matrix.artifact_name }}-${{ github.ref_name }}.tar.gz
+
+      - name: Upload symbols artifact (Linux/macOS)
+        if: runner.os != 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}-symbols
+          path: ${{ matrix.artifact_name }}-${{ github.ref_name }}-symbols.tar.gz
 
   release:
     name: Create Release
