@@ -55,6 +55,7 @@ jobs:
     env:
       ORT_VERSION: "1.23.2"
       MACOSX_DEPLOYMENT_TARGET: "10.15"
+      HF_MODEL_REPO: "Corvo007/mms-300m-1130-forced-aligner-int8"
 
     steps:
       - uses: actions/checkout@v4
@@ -202,6 +203,73 @@ jobs:
           cp data/Chinese_to_Pinyin.txt "$PKG_DIR/"
           tar -czvf "${PKG_DIR}.tar.gz" "$PKG_DIR"
           tar -czvf "${SYMBOLS_DIR}.tar.gz" "$SYMBOLS_DIR"
+
+      # Integration test: verify packaged binary works with real alignment
+      # Skip for cross-compiled ARM64 builds
+      - name: Download INT8 model for testing
+        if: matrix.arch != 'arm64'
+        run: |
+          set -euxo pipefail
+          mkdir -p test-model
+          curl -L "https://huggingface.co/${HF_MODEL_REPO}/resolve/main/model.onnx" -o test-model/model.onnx
+          curl -L "https://huggingface.co/${HF_MODEL_REPO}/resolve/main/vocab.json" -o test-model/vocab.json
+
+      - name: Integration test (Linux)
+        if: runner.os == 'Linux' && matrix.arch != 'arm64'
+        run: |
+          set -euxo pipefail
+          VERSION="${{ github.ref_name }}"
+          PKG_DIR="${{ matrix.artifact_name }}-${VERSION}"
+          # Run alignment test with Japanese audio (romanize enabled)
+          "$PKG_DIR/cpp-ort-aligner" \
+            --model test-model \
+            --audio test/samples/japanese_test.wav \
+            --srt test/samples/japanese_test.srt \
+            --output test-output.srt \
+            --romanize
+          echo "=== Alignment output ==="
+          cat test-output.srt
+          # Verify output file was created and has content
+          test -s test-output.srt || { echo "Output file is empty!"; exit 1; }
+
+      - name: Integration test (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euxo pipefail
+          VERSION="${{ github.ref_name }}"
+          PKG_DIR="${{ matrix.artifact_name }}-${VERSION}"
+          # Run alignment test with Japanese audio (romanize enabled)
+          "$PKG_DIR/cpp-ort-aligner" \
+            --model test-model \
+            --audio test/samples/japanese_test.wav \
+            --srt test/samples/japanese_test.srt \
+            --output test-output.srt \
+            --romanize
+          echo "=== Alignment output ==="
+          cat test-output.srt
+          # Verify output file was created and has content
+          test -s test-output.srt || { echo "Output file is empty!"; exit 1; }
+
+      - name: Integration test (Windows x64)
+        if: runner.os == 'Windows' && matrix.arch == 'x64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = "${{ github.ref_name }}"
+          $pkgDir = "${{ matrix.artifact_name }}-${version}"
+          # Run alignment test with Japanese audio (romanize enabled)
+          & "$pkgDir/cpp-ort-aligner.exe" `
+            --model test-model `
+            --audio test/samples/japanese_test.wav `
+            --srt test/samples/japanese_test.srt `
+            --output test-output.srt `
+            --romanize
+          Write-Host "=== Alignment output ==="
+          Get-Content test-output.srt
+          # Verify output file was created and has content
+          if (-not (Test-Path test-output.srt) -or (Get-Item test-output.srt).Length -eq 0) {
+            throw "Output file is empty or missing!"
+          }
 
       - name: Upload artifact (Windows)
         if: runner.os == 'Windows'

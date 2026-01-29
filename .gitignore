@@ -7,6 +7,9 @@ dist
 ffmpeg.exe
 *.wav
 *.srt
+# Keep test samples
+!test/samples/*.wav
+!test/samples/*.srt
 \target
 \libtorch
 \models
