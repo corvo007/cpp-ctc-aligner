@@ -205,9 +205,10 @@ jobs:
           tar -czvf "${SYMBOLS_DIR}.tar.gz" "$SYMBOLS_DIR"
 
       # Integration test: verify packaged binary works with real alignment
-      # Skip for cross-compiled ARM64 builds
-      - name: Download INT8 model for testing
-        if: matrix.arch != 'arm64'
+      # Skip only for Windows ARM64 (cross-compiled, can't run natively)
+      # Linux ARM64 uses native ARM runner, so it can test directly
+      - name: Download INT8 model for testing (Linux/macOS)
+        if: runner.os != 'Windows'
         run: |
           set -euxo pipefail
           mkdir -p test-model
@@ -215,7 +216,7 @@ jobs:
           curl -L "https://huggingface.co/${HF_MODEL_REPO}/resolve/main/vocab.json" -o test-model/vocab.json
 
       - name: Integration test (Linux)
-        if: runner.os == 'Linux' && matrix.arch != 'arm64'
+        if: runner.os == 'Linux'
         run: |
           set -euxo pipefail
           VERSION="${{ github.ref_name }}"
@@ -249,6 +250,15 @@ jobs:
           cat test-output.srt
           # Verify output file was created and has content
           test -s test-output.srt || { echo "Output file is empty!"; exit 1; }
+
+      - name: Download INT8 model for testing (Windows)
+        if: runner.os == 'Windows' && matrix.arch == 'x64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Path test-model -Force
+          Invoke-WebRequest -Uri "https://huggingface.co/$env:HF_MODEL_REPO/resolve/main/model.onnx" -OutFile test-model/model.onnx
+          Invoke-WebRequest -Uri "https://huggingface.co/$env:HF_MODEL_REPO/resolve/main/vocab.json" -OutFile test-model/vocab.json
 
       - name: Integration test (Windows x64)
         if: runner.os == 'Windows' && matrix.arch == 'x64'
