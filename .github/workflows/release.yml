@@ -44,7 +44,7 @@ jobs:
             ort_pkg: onnxruntime-linux-aarch64
             ort_ext: tgz
           # macOS (universal2 covers both x64 and arm64)
-          - os: macos-13
+          - os: macos-latest
             arch: universal2
             generator: Ninja
             config: Release

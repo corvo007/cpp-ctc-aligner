@@ -18,7 +18,7 @@ jobs:
           - os: ubuntu-20.04
             generator: Ninja
             config: Release
-          - os: macos-13
+          - os: macos-latest
             generator: Ninja
             config: Release
 
