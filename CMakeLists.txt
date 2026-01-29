@@ -73,6 +73,16 @@ if (USE_SYSTEM_ORT)
   target_link_libraries(cpp-ort-aligner PRIVATE onnxruntime)
 endif()
 
+# Set RPATH for Linux so the executable can find libonnxruntime.so in the same directory
+if (NOT WIN32 AND NOT APPLE)
+  set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
+  set(CMAKE_INSTALL_RPATH "$ORIGIN")
+  set_target_properties(cpp-ort-aligner PROPERTIES
+    BUILD_RPATH "$ORIGIN"
+    INSTALL_RPATH "$ORIGIN"
+  )
+endif()
+
 if (MSVC)
   target_compile_options(cpp-ort-aligner PRIVATE /W4 /permissive- /utf-8)
   target_compile_definitions(cpp-ort-aligner PRIVATE _CRT_SECURE_NO_WARNINGS)

@@ -165,6 +165,7 @@ jobs:
           VERSION="${{ github.ref_name }}"
           PKG_DIR="${{ matrix.artifact_name }}-${VERSION}"
           SYMBOLS_DIR="${{ matrix.artifact_name }}-${VERSION}-symbols"
+          ORT_LIB_DIR="models/${{ matrix.ort_pkg }}-${ORT_VERSION}/lib"
           mkdir -p "$PKG_DIR" "$SYMBOLS_DIR"
           # Extract debug symbols to separate file
           objcopy --only-keep-debug build/cpp-ort-aligner "$SYMBOLS_DIR/cpp-ort-aligner.debug"
@@ -172,6 +173,8 @@ jobs:
           objcopy --strip-debug build/cpp-ort-aligner "$PKG_DIR/cpp-ort-aligner"
           # Add debug link to stripped binary (optional, helps debuggers find symbols)
           objcopy --add-gnu-debuglink="$SYMBOLS_DIR/cpp-ort-aligner.debug" "$PKG_DIR/cpp-ort-aligner"
+          # Copy ONNX Runtime shared library (RPATH is set to $ORIGIN in CMakeLists.txt)
+          cp "$ORT_LIB_DIR"/libonnxruntime.so* "$PKG_DIR/"
           cp data/Chinese_to_Pinyin.txt "$PKG_DIR/"
           tar -czvf "${PKG_DIR}.tar.gz" "$PKG_DIR"
           tar -czvf "${SYMBOLS_DIR}.tar.gz" "$SYMBOLS_DIR"
@@ -183,8 +186,15 @@ jobs:
           VERSION="${{ github.ref_name }}"
           PKG_DIR="${{ matrix.artifact_name }}-${VERSION}"
           SYMBOLS_DIR="${{ matrix.artifact_name }}-${VERSION}-symbols"
+          ORT_LIB_DIR="models/${{ matrix.ort_pkg }}-${ORT_VERSION}/lib"
           mkdir -p "$PKG_DIR" "$SYMBOLS_DIR"
           cp build/cpp-ort-aligner "$PKG_DIR/"
+          # Copy ONNX Runtime dylib
+          cp "$ORT_LIB_DIR/libonnxruntime.dylib" "$PKG_DIR/"
+          # Fix dylib install name to use @loader_path (same directory as executable)
+          install_name_tool -id @loader_path/libonnxruntime.dylib "$PKG_DIR/libonnxruntime.dylib"
+          # Fix executable to look for dylib in same directory
+          install_name_tool -change @rpath/libonnxruntime.${ORT_VERSION}.dylib @loader_path/libonnxruntime.dylib "$PKG_DIR/cpp-ort-aligner"
           # Generate dSYM debug symbols in separate directory
           dsymutil "$PKG_DIR/cpp-ort-aligner" -o "$SYMBOLS_DIR/cpp-ort-aligner.dSYM"
           # Strip debug symbols from binary
