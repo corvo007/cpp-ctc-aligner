@@ -15,15 +15,16 @@ jobs:
           - os: windows-latest
             generator: "Ninja Multi-Config"
             config: Release
-          - os: ubuntu-latest
+          - os: ubuntu-20.04
             generator: Ninja
             config: Release
-          - os: macos-latest
+          - os: macos-13
             generator: Ninja
             config: Release
 
     env:
       ORT_VERSION: "1.23.2"
+      MACOSX_DEPLOYMENT_TARGET: "10.15"
 
     steps:
       - uses: actions/checkout@v4

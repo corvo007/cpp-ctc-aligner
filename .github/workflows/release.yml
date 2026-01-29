@@ -29,14 +29,14 @@ jobs:
             ort_pkg: onnxruntime-win-arm64
             ort_ext: zip
           # Linux
-          - os: ubuntu-latest
+          - os: ubuntu-20.04
             arch: x64
             generator: Ninja
             config: Release
             artifact_name: cpp-ort-aligner-linux-x64
             ort_pkg: onnxruntime-linux-x64
             ort_ext: tgz
-          - os: ubuntu-24.04-arm
+          - os: ubuntu-22.04-arm
             arch: arm64
             generator: Ninja
             config: Release
@@ -44,7 +44,7 @@ jobs:
             ort_pkg: onnxruntime-linux-aarch64
             ort_ext: tgz
           # macOS (universal2 covers both x64 and arm64)
-          - os: macos-latest
+          - os: macos-13
             arch: universal2
             generator: Ninja
             config: Release
@@ -54,6 +54,7 @@ jobs:
 
     env:
       ORT_VERSION: "1.23.2"
+      MACOSX_DEPLOYMENT_TARGET: "10.15"
 
     steps:
       - uses: actions/checkout@v4
