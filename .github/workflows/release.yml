@@ -29,7 +29,7 @@ jobs:
             ort_pkg: onnxruntime-win-arm64
             ort_ext: zip
           # Linux
-          - os: ubuntu-20.04
+          - os: ubuntu-22.04
             arch: x64
             generator: Ninja
             config: Release
