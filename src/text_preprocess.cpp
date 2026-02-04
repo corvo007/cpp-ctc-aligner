@@ -187,12 +187,30 @@ PreprocessResult preprocess_text_cpp(const std::string& full_text, const std::st
       tokens.push_back(romanize_text(t));
     }
   } else {
+    // For non-romanized languages (e.g., English), we still need to normalize:
+    // - Convert uppercase to lowercase (vocab.json only has a-z)
+    // - Filter out punctuation and other non-vocab characters
+    // This fixes MIOSUB-V: uppercase letters and punctuation were being kept in tokens
+    // but silently skipped when building CTC targets, causing index mismatch in get_spans.
     for (const auto& t : norm_text) {
       const auto chars = utf8_split_chars(t);
       std::string joined;
       for (size_t k = 0; k < chars.size(); ++k) {
-        if (k) joined.push_back(' ');
-        joined += chars[k];
+        // Only process single-byte ASCII characters
+        if (chars[k].size() == 1) {
+          char c = chars[k][0];
+          // Convert uppercase to lowercase
+          if (c >= 'A' && c <= 'Z') {
+            c = c - 'A' + 'a';
+          }
+          // Only keep a-z and apostrophe (matching vocab.json)
+          if ((c >= 'a' && c <= 'z') || c == '\'') {
+            if (!joined.empty()) joined.push_back(' ');
+            joined.push_back(c);
+          }
+          // Punctuation and other characters are silently dropped
+        }
+        // Multi-byte UTF-8 characters (non-ASCII) are dropped for non-romanized mode
       }
       tokens.push_back(joined);
     }
