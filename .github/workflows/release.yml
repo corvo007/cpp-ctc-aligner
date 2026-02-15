@@ -197,6 +197,13 @@ jobs:
           dsymutil "$PKG_DIR/cpp-ort-aligner" -o "$SYMBOLS_DIR/cpp-ort-aligner.dSYM"
           # Strip debug symbols from binary
           strip "$PKG_DIR/cpp-ort-aligner"
+          # Ad-hoc code signing for macOS Gatekeeper compatibility (Ref: MIOSUB-1N)
+          # Sign dylib first, then executable (order matters for nested signatures)
+          codesign --force --sign - --timestamp=none "$PKG_DIR/libonnxruntime.dylib"
+          codesign --force --sign - --timestamp=none "$PKG_DIR/cpp-ort-aligner"
+          # Verify signatures
+          codesign --verify --verbose "$PKG_DIR/libonnxruntime.dylib"
+          codesign --verify --verbose "$PKG_DIR/cpp-ort-aligner"
           cp data/Chinese_to_Pinyin.txt "$PKG_DIR/"
           tar -czvf "${PKG_DIR}.tar.gz" "$PKG_DIR"
           tar -czvf "${SYMBOLS_DIR}.tar.gz" "$SYMBOLS_DIR"
