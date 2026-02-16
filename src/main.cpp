@@ -30,6 +30,7 @@ namespace fs = std::filesystem;
 #include "audio_decode.h"
 #include "kanji_pinyin.h"
 #include "stacktrace.h"
+#include "utf8_utils.h"
 
 // Emissions generation now lives in emissions.cpp; keep main minimal.
 
@@ -269,32 +270,10 @@ static int run_alignment(int argc, char** argv) {
           // IMPORTANT: `num_chars` is counted in *Python characters* (Unicode codepoints),
           // not bytes. Our `word_ts` tokens are UTF-8 strings, so we must count UTF-8 codepoints
           // in `seg_text`, not `seg_text.size()` bytes.
-          auto utf8_codepoints = [](const std::string& s) -> size_t {
-            size_t count = 0;
-            for (size_t i = 0; i < s.size();) {
-              unsigned char c = static_cast<unsigned char>(s[i]);
-              if (c < 0x80) {
-                i += 1;
-              } else if ((c >> 5) == 0x6) {
-                i += 2;
-              } else if ((c >> 4) == 0xE) {
-                i += 3;
-              } else if ((c >> 3) == 0x1E) {
-                i += 4;
-              } else {
-                // invalid byte, advance to avoid infinite loop
-                i += 1;
-              }
-              count += 1;
-            }
-            return count;
-          };
-
           std::string seg_text = seg.text;
           for (char& ch : seg_text) {
             if (ch == '\n') ch = ' ';
           }
-          // strip ASCII whitespace like Python's .strip()
           while (!seg_text.empty() && std::isspace(static_cast<unsigned char>(seg_text.front()))) {
             seg_text.erase(seg_text.begin());
           }
@@ -302,7 +281,7 @@ static int run_alignment(int argc, char** argv) {
             seg_text.pop_back();
           }
 
-          const size_t num_chars = utf8_codepoints(seg_text);
+          const size_t num_chars = utf8::codepoint_count(seg_text);
           if (num_chars == 0 || char_idx >= word_ts.size()) {
             continue;
           }

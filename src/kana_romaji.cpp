@@ -1,6 +1,7 @@
 #include "kana_romaji.h"
 #include "kanji_pinyin.h"
 #include "hangul_romaji.h"
+#include "utf8_utils.h"
 
 #include <unordered_map>
 #include <cstdint>
@@ -8,47 +9,6 @@
 namespace kana {
 
 namespace {
-
-// Get the Unicode code point from a UTF-8 string_view (first character only)
-uint32_t utf8_to_codepoint(std::string_view s) {
-    if (s.empty()) return 0;
-
-    unsigned char c0 = static_cast<unsigned char>(s[0]);
-
-    // 1-byte sequence (ASCII)
-    if ((c0 & 0x80) == 0) {
-        return c0;
-    }
-    // 2-byte sequence
-    if ((c0 & 0xE0) == 0xC0 && s.size() >= 2) {
-        unsigned char c1 = static_cast<unsigned char>(s[1]);
-        return ((c0 & 0x1F) << 6) | (c1 & 0x3F);
-    }
-    // 3-byte sequence (hiragana/katakana/CJK are here)
-    if ((c0 & 0xF0) == 0xE0 && s.size() >= 3) {
-        unsigned char c1 = static_cast<unsigned char>(s[1]);
-        unsigned char c2 = static_cast<unsigned char>(s[2]);
-        return ((c0 & 0x0F) << 12) | ((c1 & 0x3F) << 6) | (c2 & 0x3F);
-    }
-    // 4-byte sequence
-    if ((c0 & 0xF8) == 0xF0 && s.size() >= 4) {
-        unsigned char c1 = static_cast<unsigned char>(s[1]);
-        unsigned char c2 = static_cast<unsigned char>(s[2]);
-        unsigned char c3 = static_cast<unsigned char>(s[3]);
-        return ((c0 & 0x07) << 18) | ((c1 & 0x3F) << 12) | ((c2 & 0x3F) << 6) | (c3 & 0x3F);
-    }
-
-    return 0;
-}
-
-// Get the byte length of a UTF-8 character from its first byte
-size_t utf8_char_len(unsigned char first_byte) {
-    if ((first_byte & 0x80) == 0) return 1;
-    if ((first_byte & 0xE0) == 0xC0) return 2;
-    if ((first_byte & 0xF0) == 0xE0) return 3;
-    if ((first_byte & 0xF8) == 0xF0) return 4;
-    return 1;  // Invalid, treat as 1
-}
 
 // Build the kana-to-romaji lookup table
 const std::unordered_map<std::string, std::string>& get_kana_map() {
@@ -160,7 +120,7 @@ const std::unordered_map<std::string, std::string>& get_kana_map() {
 
 // Check if a UTF-8 character is kanji (CJK Unified Ideograph)
 bool is_kanji(std::string_view ch) {
-    uint32_t cp = utf8_to_codepoint(ch);
+    uint32_t cp = utf8::to_codepoint(ch);
     // CJK Unified Ideographs: U+4E00 to U+9FFF
     return cp >= 0x4E00 && cp <= 0x9FFF;
 }
@@ -175,7 +135,7 @@ std::string romanize_kana(const std::string& text) {
     size_t i = 0;
     while (i < text.size()) {
         unsigned char c = static_cast<unsigned char>(text[i]);
-        size_t char_len = utf8_char_len(c);
+        size_t char_len = utf8::char_len(c);
 
         // Ensure we don't read past the end
         if (i + char_len > text.size()) {

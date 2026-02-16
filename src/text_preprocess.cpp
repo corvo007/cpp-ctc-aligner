@@ -1,5 +1,6 @@
 #include "text_preprocess.h"
 #include "kana_romaji.h"
+#include "utf8_utils.h"
 
 #include <cctype>
 #include <regex>
@@ -82,28 +83,9 @@ static std::string normalize_uroman_cpp(std::string s) {
   return out;
 }
 
-static std::vector<std::string> utf8_split_chars(const std::string& s) {
-  std::vector<std::string> out;
-  for (size_t i = 0; i < s.size();) {
-    unsigned char c = static_cast<unsigned char>(s[i]);
-    size_t n = 1;
-    if (c < 0x80)
-      n = 1;
-    else if ((c >> 5) == 0x6)
-      n = 2;
-    else if ((c >> 4) == 0xE)
-      n = 3;
-    else if ((c >> 3) == 0x1E)
-      n = 4;
-    if (i + n > s.size()) n = 1;
-    out.push_back(s.substr(i, n));
-    i += n;
-  }
-  return out;
-}
 
 static std::vector<std::string> split_text_word_or_char(const std::string& text, bool force_char) {
-  if (force_char) return utf8_split_chars(text);
+  if (force_char) return utf8::split_chars(text);
   std::vector<std::string> out;
   std::string cur;
   for (size_t i = 0; i < text.size();) {
@@ -144,7 +126,7 @@ static std::string romanize_text(const std::string& norm_text) {
 
   // 3. Join characters with spaces (like Python's " ".join(text.strip()))
   std::string joined;
-  const auto chars = utf8_split_chars(stripped);
+  const auto chars = utf8::split_chars(stripped);
   for (size_t k = 0; k < chars.size(); ++k) {
     if (k) joined.push_back(' ');
     joined += chars[k];
@@ -164,7 +146,7 @@ static std::vector<std::string> tokenize_utf8_for_omnilingual(
     const std::string& text,
     const Vocab& vocab) {
   std::vector<std::string> tokens;
-  const auto chars = utf8_split_chars(text);
+  const auto chars = utf8::split_chars(text);
 
   for (const auto& ch : chars) {
     // Skip whitespace - CJK languages don't use space as word separator
@@ -243,7 +225,7 @@ PreprocessResult preprocess_text(
       while (!out.empty() && std::isspace(static_cast<unsigned char>(out.front()))) out.erase(out.begin());
       while (!out.empty() && std::isspace(static_cast<unsigned char>(out.back()))) out.pop_back();
 
-      const auto chars = utf8_split_chars(out);
+      const auto chars = utf8::split_chars(out);
       std::string joined;
       for (size_t k = 0; k < chars.size(); ++k) {
         if (chars[k].size() == 1) {
