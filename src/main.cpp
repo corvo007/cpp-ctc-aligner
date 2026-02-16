@@ -1,5 +1,7 @@
 #include <onnxruntime_cxx_api.h>
 
+#include <nlohmann/json.hpp>
+
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -33,37 +35,6 @@ namespace fs = std::filesystem;
 
 // Forward declaration
 static int run_alignment(int argc, char** argv);
-
-static std::string json_quote_str(const std::string& s) {
-  // Minimal JSON string escaping (enough for our debug artifacts).
-  std::string out;
-  out.reserve(s.size() + 8);
-  out.push_back('"');
-  for (char c : s) {
-    switch (c) {
-      case '\\':
-        out += "\\\\";
-        break;
-      case '"':
-        out += "\\\"";
-        break;
-      case '\n':
-        out += "\\n";
-        break;
-      case '\r':
-        out += "\\r";
-        break;
-      case '\t':
-        out += "\\t";
-        break;
-      default:
-        out.push_back(c);
-        break;
-    }
-  }
-  out.push_back('"');
-  return out;
-}
 
 int main(int argc, char** argv) {
   try {
@@ -402,20 +373,18 @@ static int run_alignment(int argc, char** argv) {
 
       if (args.debug && !args.debug_dir.empty()) {
         fs::create_directories(args.debug_dir);
+        using json = nlohmann::json;
 
         // 01_original_segments.json
         {
-          std::ofstream f(args.debug_dir / "01_original_segments.json", std::ios::binary);
-          // Match align.py: dump original segments (before alignment) as a plain array of objects.
-          f << "[\n";
+          json j = json::array();
           for (size_t i = 0; i < original_segments_for_debug.size(); ++i) {
             const auto& seg = original_segments_for_debug[i];
-            f << "  {\"index\": " << (i + 1) << ", \"start\": " << seg.start_sec << ", \"end\": " << seg.end_sec
-              << ", \"text\": " << json_quote_str(seg.text) << ", \"score\": " << seg.score << "}";
-            if (i + 1 != original_segments_for_debug.size()) f << ",";
-            f << "\n";
+            j.push_back({{"index", i + 1}, {"start", seg.start_sec}, {"end", seg.end_sec},
+                          {"text", seg.text}, {"score", seg.score}});
           }
-          f << "]\n";
+          std::ofstream f(args.debug_dir / "01_original_segments.json", std::ios::binary);
+          f << j.dump(2) << "\n";
         }
         // 02_full_text.txt
         {
@@ -423,86 +392,50 @@ static int run_alignment(int argc, char** argv) {
           f.write(full_text_for_debug.data(), std::streamsize(full_text_for_debug.size()));
         }
 
-        auto write_json_string_array = [](const fs::path& p, const std::vector<std::string>& arr) {
-          std::ofstream f(p, std::ios::binary);
-          f << "[\n";
-          for (size_t i = 0; i < arr.size(); ++i) {
-            std::string e;
-            e.reserve(arr[i].size() + 8);
-            for (char c : arr[i]) {
-              switch (c) {
-                case '\\':
-                  e += "\\\\";
-                  break;
-                case '"':
-                  e += "\\\"";
-                  break;
-                case '\n':
-                  e += "\\n";
-                  break;
-                case '\r':
-                  e += "\\r";
-                  break;
-                case '\t':
-                  e += "\\t";
-                  break;
-                default:
-                  e.push_back(c);
-                  break;
-              }
-            }
-            f << "  \"" << e << "\"";
-            if (i + 1 != arr.size()) f << ",";
-            f << "\n";
-          }
-          f << "]\n";
-        };
-
-        write_json_string_array(args.debug_dir / "03_tokens_starred.json", tokens_starred);
-        write_json_string_array(args.debug_dir / "04_text_starred.json", text_starred);
-
-        // 05_word_timestamps.json (list of {text,start,end,score})
+        // 03_tokens_starred.json / 04_text_starred.json
         {
-          std::ofstream f(args.debug_dir / "05_word_timestamps.json", std::ios::binary);
-          f << "[\n";
-          for (size_t i = 0; i < word_ts.size(); ++i) {
-            const auto& w = word_ts[i];
-            f << "  {\"text\": " << json_quote_str(w.text) << ", \"start\": " << w.start_sec << ", \"end\": " << w.end_sec
-              << ", \"score\": " << w.score << "}";
-            if (i + 1 != word_ts.size()) f << ",";
-            f << "\n";
-          }
-          f << "]\n";
+          std::ofstream f3(args.debug_dir / "03_tokens_starred.json", std::ios::binary);
+          f3 << json(tokens_starred).dump(2) << "\n";
+          std::ofstream f4(args.debug_dir / "04_text_starred.json", std::ios::binary);
+          f4 << json(text_starred).dump(2) << "\n";
         }
 
-        // 06_aligned_segments.json (list of {index,start,end,text,score})
+        // 05_word_timestamps.json
         {
-          std::ofstream f(args.debug_dir / "06_aligned_segments.json", std::ios::binary);
-          f << "[\n";
+          json j = json::array();
+          for (const auto& w : word_ts) {
+            j.push_back({{"text", w.text}, {"start", w.start_sec}, {"end", w.end_sec}, {"score", w.score}});
+          }
+          std::ofstream f(args.debug_dir / "05_word_timestamps.json", std::ios::binary);
+          f << j.dump(2) << "\n";
+        }
+
+        // 06_aligned_segments.json
+        {
+          json j = json::array();
           for (size_t i = 0; i < srt_segments.size(); ++i) {
             const auto& seg = srt_segments[i];
-            f << "  {\"index\": " << (i + 1) << ", \"start\": " << seg.start_sec << ", \"end\": " << seg.end_sec
-              << ", \"text\": " << json_quote_str(seg.text) << ", \"score\": " << seg.score << "}";
-            if (i + 1 != srt_segments.size()) f << ",";
-            f << "\n";
+            j.push_back({{"index", i + 1}, {"start", seg.start_sec}, {"end", seg.end_sec},
+                          {"text", seg.text}, {"score", seg.score}});
           }
-          f << "]\n";
+          std::ofstream f(args.debug_dir / "06_aligned_segments.json", std::ios::binary);
+          f << j.dump(2) << "\n";
         }
 
-        // 00_summary.json (match align.py keys)
+        // 00_summary.json
         {
+          json j = {
+            {"audio_path", args.audio.string()},
+            {"srt_path", args.srt.string()},
+            {"language", language},
+            {"romanize", romanize},
+            {"audio_duration", audio_samples.size() / 16000.0},
+            {"num_segments", srt_segments.size()},
+            {"num_words", word_ts.size()},
+            {"processing_time", 0.0}
+          };
           std::ofstream f(args.debug_dir / "00_summary.json", std::ios::binary);
-          f << "{\n";
-          f << "  \"audio_path\": " << json_quote_str(args.audio.string()) << ",\n";
-          f << "  \"srt_path\": " << json_quote_str(args.srt.string()) << ",\n";
-          f << "  \"language\": " << json_quote_str(language) << ",\n";
-          f << "  \"romanize\": " << (romanize ? "true" : "false") << ",\n";
-          f << "  \"audio_duration\": " << (audio_samples.size() / 16000.0) << ",\n";
-          f << "  \"num_segments\": " << srt_segments.size() << ",\n";
-          f << "  \"num_words\": " << word_ts.size() << ",\n";
-          // align.py stores processing_time in seconds; we keep 0.0 for now (can be wired later if needed).
-          f << "  \"processing_time\": " << 0.0 << "\n";
-          f << "}\n";
+          f << j.dump(2) << "\n";
         }
       }
   } catch (const std::exception& e) {
