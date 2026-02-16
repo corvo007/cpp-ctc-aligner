@@ -35,7 +35,7 @@ std::vector<WordTimestamp> postprocess_results(
     float sum = 0.0f;
     // Python uses slice [start:end] where end is inclusive in Segment, but Python slice is exclusive,
     // so it's effectively [start, end).
-    const int64_t end_excl = std::min<int64_t>(seg_end_idx_incl, int64_t(scores.size()));
+    const int64_t end_excl = std::min<int64_t>(seg_end_idx_incl + 1, int64_t(scores.size()));
     for (int64_t j = std::max<int64_t>(0, seg_start_idx); j < end_excl; ++j) {
       sum += scores[size_t(j)];
     }

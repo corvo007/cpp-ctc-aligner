@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(cpp_ort_aligner VERSION 0.1.4 LANGUAGES CXX)
+project(cpp_ort_aligner VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 
@@ -51,11 +51,13 @@ add_executable(cpp-ort-aligner
   src/json_io.cpp
   src/kana_romaji.cpp
   src/kanji_pinyin.cpp
+  src/model_config.cpp
   src/span_align.cpp
   src/postprocess.cpp
   src/srt_io.cpp
   src/stacktrace.cpp
   src/text_preprocess.cpp
+  src/vocab.cpp
   src/vocab_json.cpp
 )
 

@@ -18,10 +18,12 @@ namespace fs = std::filesystem;
 #include "forced_align.h"
 #include "json_io.h"
 #include "logger.h"
+#include "model_config.h"
 #include "postprocess.h"
 #include "span_align.h"
 #include "srt_io.h"
 #include "text_preprocess.h"
+#include "vocab.h"
 #include "vocab_json.h"
 #include "audio_decode.h"
 #include "kanji_pinyin.h"
@@ -98,10 +100,18 @@ static int run_alignment(int argc, char** argv) {
 
   const fs::path wav_path = args.audio;
   const std::string language = args.language;
-  const bool romanize = args.romanize;
   const int batch_size = args.batch_size;
 
-  // Load kanji pinyin table if using romanization
+  // Detect model type and configuration
+  const auto model_config = detect_model_config(args.model_dir);
+  log.info(std::string("Detected model: ") + model_config.description);
+
+  // Determine if romanization is needed
+  // - MMS models require romanization for CJK languages
+  // - Omnilingual models do NOT need romanization (native CJK support)
+  const bool romanize = model_config.requires_romanization && args.romanize;
+
+  // Load kanji pinyin table only if using romanization (MMS model)
   if (romanize) {
     const fs::path& pinyin_table_path = args.pinyin_table;
     log.info(std::string("Loading kanji pinyin table from: ") + pinyin_table_path.string());
@@ -134,8 +144,8 @@ static int run_alignment(int argc, char** argv) {
     log.info(ss.str());
   }
 
-  const fs::path model_onnx = args.model_dir / "model.onnx";
-  const fs::path vocab_json_path = args.model_dir / "vocab.json";
+  // Use model path from config (supports both model.onnx and model.int8.onnx)
+  const fs::path& model_onnx = model_config.model_path;
 #ifdef _WIN32
   Ort::Session session(env, model_onnx.wstring().c_str(), opts);
 #else
@@ -194,17 +204,29 @@ static int run_alignment(int argc, char** argv) {
   std::vector<std::string> text_starred;
   std::string full_text_for_debug = full_text;
 
-  const auto prep = preprocess_text_cpp(full_text, language, romanize);
+  // Load vocab using unified interface (auto-detects JSON or TXT format)
+  const auto vocab = load_vocab(args.model_dir);
+  {
+    std::ostringstream ss;
+    ss << "Loaded vocab: " << vocab.vocab_size() << " tokens (format: "
+       << (vocab.format == VocabFormat::JSON ? "JSON" : "TXT") << ")";
+    log.info(ss.str());
+  }
+
+  // Preprocess text using new unified interface
+  PreprocessConfig prep_config;
+  prep_config.romanize = romanize;
+  prep_config.language = language;
+  const auto prep = preprocess_text(full_text, vocab, prep_config);
   full_text_for_debug = prep.full_text;
   tokens_starred = prep.tokens_starred;
   text_starred = prep.text_starred;
 
-  const auto vocab = load_vocab_json_with_star(vocab_json_path);
   const int64_t star_id = vocab.star_id;
   if (star_id != emissions.classes - 1) {
     throw std::runtime_error(
         "vocab size mismatch: emissions classes=" + std::to_string(emissions.classes) + ", vocab+star=" +
-        std::to_string(star_id + 1) + " (check matching model.onnx + vocab.json)");
+        std::to_string(star_id + 1) + " (check matching model + vocab file)");
   }
 
   std::vector<int64_t> targets;
@@ -243,7 +265,7 @@ static int run_alignment(int argc, char** argv) {
       path,
       scores);
 
-  // Build idx_to_token for spans from vocab.json.
+  // Build idx_to_token for spans from vocab.
   std::unordered_map<int64_t, std::string> idx_to_token;
   for (const auto& kv : vocab.token_to_id) {
     idx_to_token[kv.second] = kv.first;
@@ -252,8 +274,12 @@ static int run_alignment(int argc, char** argv) {
 
   const auto segments = merge_repeats_str(path, idx_to_token);
 
+  // Determine blank token name based on model type
+  // MMS uses "<blank>", Omnilingual uses "<s>"
+  const std::string blank_token = (model_config.type == ModelType::MMS_300M) ? "<blank>" : "<s>";
+
   try {
-    const auto spans = get_spans_str(tokens_starred, segments, "<blank>");
+    const auto spans = get_spans_str(tokens_starred, segments, blank_token);
 
     auto word_ts = postprocess_results(text_starred, spans, emissions.stride_ms, scores);
 
@@ -333,21 +359,19 @@ static int run_alignment(int argc, char** argv) {
           seg.start_sec = first.start_sec;
           seg.end_sec = last.end_sec;
 
-          // Compute average confidence score from word scores in this segment
-          // Match Python: convert log_prob to linear probability, then average
+          // Compute normalized confidence score for this segment.
+          // Normalize per-frame avg log_prob against random baseline:
+          //   score=1.0 when log_prob=0 (perfect), score=0.0 when log_prob=-ln(V) (random guess)
+          const float log_vocab = std::log(static_cast<float>(vocab.vocab_size()));
           std::vector<float> token_probs;
           token_probs.reserve(end_idx - start_idx + 1);
           for (size_t wi = start_idx; wi <= end_idx && wi < word_ts.size(); ++wi) {
             const auto& wt = word_ts[wi];
-            // wt.score is sum of log_prob over frames for this token
             float token_total_log_prob = wt.score;
-            // Approximate frame count (stride is typically 20ms)
             float token_duration = static_cast<float>(wt.end_sec - wt.start_sec);
             int n_frames = std::max(1, static_cast<int>(token_duration / 0.02f));
-            // Average log_prob per frame
-            float token_avg_log_prob = token_total_log_prob / static_cast<float>(n_frames);
-            // Convert to linear probability (0.0 - 1.0)
-            float token_prob = std::min(1.0f, std::exp(token_avg_log_prob));
+            float avg_log_prob = token_total_log_prob / static_cast<float>(n_frames);
+            float token_prob = std::max(0.0f, std::min(1.0f, 1.0f + avg_log_prob / log_vocab));
             token_probs.push_back(token_prob);
           }
           // Final score is arithmetic mean of token probabilities

@@ -159,58 +159,103 @@ static std::string romanize_text(const std::string& norm_text) {
   return normalize_uroman_cpp(joined);
 }
 
-}  // namespace
+// Tokenize UTF-8 text for Omnilingual model (direct vocab lookup, no romanization)
+static std::vector<std::string> tokenize_utf8_for_omnilingual(
+    const std::string& text,
+    const Vocab& vocab) {
+  std::vector<std::string> tokens;
+  const auto chars = utf8_split_chars(text);
 
-PreprocessResult preprocess_text_cpp(const std::string& full_text, const std::string& language, bool romanize) {
-  PreprocessResult r;
-  r.full_text = full_text;
-  const bool force_char = (language == "jpn" || language == "chi" || language == "cmn" ||
-                           language == "kor" || language == "zho");
-  const auto text_split = split_text_word_or_char(full_text, force_char);
+  for (const auto& ch : chars) {
+    // Skip whitespace - CJK languages don't use space as word separator
+    // and including space as token causes issues with space-separated token joining
+    if (ch.size() == 1 && std::isspace(static_cast<unsigned char>(ch[0]))) {
+      continue;
+    }
 
-  // Text normalization (no external config needed for basic operation)
-  std::vector<std::string> norm_text;
-  norm_text.reserve(text_split.size());
-  for (const auto& chunk : text_split) {
-    // Simple normalization: collapse spaces and trim
-    std::string out = chunk;
-    out = std::regex_replace(out, std::regex(R"(\s+)"), " ");
-    while (!out.empty() && std::isspace(static_cast<unsigned char>(out.front()))) out.erase(out.begin());
-    while (!out.empty() && std::isspace(static_cast<unsigned char>(out.back()))) out.pop_back();
-    norm_text.push_back(out);
+    // Try direct lookup first
+    if (vocab.token_to_id.count(ch)) {
+      tokens.push_back(ch);
+      continue;
+    }
+
+    // Try lowercase for ASCII letters
+    if (ch.size() == 1) {
+      char c = ch[0];
+      if (c >= 'A' && c <= 'Z') {
+        std::string lower(1, static_cast<char>(c - 'A' + 'a'));
+        if (vocab.token_to_id.count(lower)) {
+          tokens.push_back(lower);
+          continue;
+        }
+      }
+    }
+
+    // Unknown character - silently skip (punctuation, etc.)
   }
 
+  return tokens;
+}
+
+}  // namespace
+
+PreprocessResult preprocess_text(
+    const std::string& full_text,
+    const Vocab& vocab,
+    const PreprocessConfig& config) {
+  PreprocessResult r;
+  r.full_text = full_text;
+
+  const bool force_char = (config.language == "jpn" || config.language == "chi" ||
+                           config.language == "cmn" || config.language == "kor" ||
+                           config.language == "zho");
+  const auto text_split = split_text_word_or_char(full_text, force_char);
+
   std::vector<std::string> tokens;
-  tokens.reserve(norm_text.size());
-  if (romanize) {
-    for (const auto& t : norm_text) {
-      tokens.push_back(romanize_text(t));
+  tokens.reserve(text_split.size());
+
+  if (config.romanize) {
+    // MMS-style: romanize then normalize
+    for (const auto& chunk : text_split) {
+      std::string out = chunk;
+      out = std::regex_replace(out, std::regex(R"(\s+)"), " ");
+      while (!out.empty() && std::isspace(static_cast<unsigned char>(out.front()))) out.erase(out.begin());
+      while (!out.empty() && std::isspace(static_cast<unsigned char>(out.back()))) out.pop_back();
+      tokens.push_back(romanize_text(out));
+    }
+  } else if (vocab.format == VocabFormat::TXT) {
+    // Omnilingual-style: UTF-8 character-level tokenization with direct vocab lookup
+    for (const auto& chunk : text_split) {
+      const auto chunk_tokens = tokenize_utf8_for_omnilingual(chunk, vocab);
+      // Join tokens with space separator
+      std::string joined;
+      for (size_t k = 0; k < chunk_tokens.size(); ++k) {
+        if (k > 0) joined.push_back(' ');
+        joined += chunk_tokens[k];
+      }
+      tokens.push_back(joined);
     }
   } else {
-    // For non-romanized languages (e.g., English), we still need to normalize:
-    // - Convert uppercase to lowercase (vocab.json only has a-z)
-    // - Filter out punctuation and other non-vocab characters
-    // This fixes MIOSUB-V: uppercase letters and punctuation were being kept in tokens
-    // but silently skipped when building CTC targets, causing index mismatch in get_spans.
-    for (const auto& t : norm_text) {
-      const auto chars = utf8_split_chars(t);
+    // MMS non-romanized (English): normalize to a-z only
+    for (const auto& chunk : text_split) {
+      std::string out = chunk;
+      out = std::regex_replace(out, std::regex(R"(\s+)"), " ");
+      while (!out.empty() && std::isspace(static_cast<unsigned char>(out.front()))) out.erase(out.begin());
+      while (!out.empty() && std::isspace(static_cast<unsigned char>(out.back()))) out.pop_back();
+
+      const auto chars = utf8_split_chars(out);
       std::string joined;
       for (size_t k = 0; k < chars.size(); ++k) {
-        // Only process single-byte ASCII characters
         if (chars[k].size() == 1) {
           char c = chars[k][0];
-          // Convert uppercase to lowercase
           if (c >= 'A' && c <= 'Z') {
             c = c - 'A' + 'a';
           }
-          // Only keep a-z and apostrophe (matching vocab.json)
           if ((c >= 'a' && c <= 'z') || c == '\'') {
             if (!joined.empty()) joined.push_back(' ');
             joined.push_back(c);
           }
-          // Punctuation and other characters are silently dropped
         }
-        // Multi-byte UTF-8 characters (non-ASCII) are dropped for non-romanized mode
       }
       tokens.push_back(joined);
     }
@@ -226,4 +271,17 @@ PreprocessResult preprocess_text_cpp(const std::string& full_text, const std::st
     r.text_starred.push_back(text_split[i]);
   }
   return r;
+}
+
+// Legacy API for backward compatibility (MMS-style preprocessing)
+PreprocessResult preprocess_text_cpp(const std::string& full_text, const std::string& language, bool romanize) {
+  // Create a dummy MMS-style vocab for legacy API
+  Vocab dummy_vocab;
+  dummy_vocab.format = VocabFormat::JSON;
+
+  PreprocessConfig config;
+  config.romanize = romanize;
+  config.language = language;
+
+  return preprocess_text(full_text, dummy_vocab, config);
 }
