@@ -314,18 +314,35 @@ static int run_alignment(int argc, char** argv) {
           //   score=1.0 when log_prob=0 (perfect), score=0.0 when log_prob=-ln(V) (random guess)
           // Skip punctuation/whitespace tokens — they were filtered during tokenization
           // and carry no real alignment signal (only blank-frame noise).
-          auto has_content_char = [](const std::string& s) {
-            for (size_t p = 0; p < s.size();) {
-              uint32_t cp = utf8::to_codepoint(std::string_view(s.data() + p, s.size() - p));
-              size_t n = utf8::char_len(static_cast<unsigned char>(s[p]));
-              if ((cp >= 'a' && cp <= 'z') || (cp >= 'A' && cp <= 'Z') ||
-                  (cp >= '0' && cp <= '9') ||
-                  (cp >= 0x4E00 && cp <= 0x9FFF) ||   // CJK Ideographs
-                  (cp >= 0x3040 && cp <= 0x309F) ||   // Hiragana
-                  (cp >= 0x30A0 && cp <= 0x30FF) ||   // Katakana
-                  (cp >= 0xAC00 && cp <= 0xD7AF))     // Hangul
-                return true;
-              p += n;
+          // Primary: vocab lookup (accurate for Omnilingual where vocab has native chars).
+          // Fallback: Unicode heuristic (for MMS where vocab has romanized a-z only).
+          auto has_content_char = [&vocab](const std::string& s) {
+            const auto chars = utf8::split_chars(s);
+            for (const auto& ch : chars) {
+              if (vocab.token_to_id.count(ch)) return true;
+              if (ch.size() == 1 && ch[0] >= 'A' && ch[0] <= 'Z') {
+                std::string lower(1, static_cast<char>(ch[0] - 'A' + 'a'));
+                if (vocab.token_to_id.count(lower)) return true;
+              }
+            }
+            // Fallback: treat non-ASCII non-punctuation as content (covers CJK in MMS)
+            for (const auto& ch : chars) {
+              if (ch.size() == 1) {
+                char c = ch[0];
+                if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))
+                  return true;
+                continue;
+              }
+              uint32_t cp = utf8::to_codepoint(std::string_view(ch.data(), ch.size()));
+              if ((cp >= 0x2000 && cp <= 0x206F) ||  // General Punctuation
+                  (cp >= 0x3000 && cp <= 0x303F) ||  // CJK Punctuation (、。「」etc.)
+                  (cp >= 0xFE30 && cp <= 0xFE6F) ||  // CJK Compatibility Forms
+                  (cp >= 0xFF01 && cp <= 0xFF0F) ||  // Fullwidth ！＂＃ etc.
+                  (cp >= 0xFF1A && cp <= 0xFF20) ||  // Fullwidth ：；＜ etc.
+                  (cp >= 0xFF3B && cp <= 0xFF40) ||  // Fullwidth ［＼］ etc.
+                  (cp >= 0xFF5B && cp <= 0xFF65))    // Fullwidth ｛｜｝ etc.
+                continue;
+              return true;  // Non-ASCII, non-punctuation → content
             }
             return false;
           };

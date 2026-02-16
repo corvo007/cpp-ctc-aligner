@@ -161,15 +161,25 @@ static std::vector<std::string> tokenize_utf8_for_omnilingual(
       continue;
     }
 
-    // Try lowercase for ASCII letters
-    if (ch.size() == 1) {
-      char c = ch[0];
-      if (c >= 'A' && c <= 'Z') {
-        std::string lower(1, static_cast<char>(c - 'A' + 'a'));
-        if (vocab.token_to_id.count(lower)) {
-          tokens.push_back(lower);
-          continue;
-        }
+    // Try lowercase: ASCII and common Unicode uppercase ranges
+    uint32_t cp = utf8::to_codepoint(std::string_view(ch.data(), ch.size()));
+    uint32_t lower_cp = cp;
+    if (cp >= 'A' && cp <= 'Z') {
+      lower_cp = cp + 0x20;
+    } else if ((cp >= 0x00C0 && cp <= 0x00D6) || (cp >= 0x00D8 && cp <= 0x00DE)) {
+      lower_cp = cp + 0x20;  // Latin Extended uppercase (À-Ö, Ø-Þ)
+    } else if (cp >= 0x0410 && cp <= 0x042F) {
+      lower_cp = cp + 0x20;  // Cyrillic А-Я → а-я
+    } else if (cp >= 0x0400 && cp <= 0x040F) {
+      lower_cp = cp + 0x50;  // Cyrillic Ё etc. → ё etc.
+    } else if ((cp >= 0x0391 && cp <= 0x03A1) || (cp >= 0x03A3 && cp <= 0x03A9)) {
+      lower_cp = cp + 0x20;  // Greek Α-Ω → α-ω
+    }
+    if (lower_cp != cp) {
+      std::string lower_ch = utf8::from_codepoint(lower_cp);
+      if (vocab.token_to_id.count(lower_ch)) {
+        tokens.push_back(lower_ch);
+        continue;
       }
     }
 

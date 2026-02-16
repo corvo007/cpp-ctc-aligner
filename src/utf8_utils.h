@@ -36,6 +36,27 @@ inline uint32_t to_codepoint(std::string_view s) {
   return 0;
 }
 
+// Encode a Unicode codepoint to a UTF-8 string.
+inline std::string from_codepoint(uint32_t cp) {
+  std::string s;
+  if (cp < 0x80) {
+    s.push_back(static_cast<char>(cp));
+  } else if (cp < 0x800) {
+    s.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+    s.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+  } else if (cp < 0x10000) {
+    s.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+    s.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+    s.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+  } else {
+    s.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+    s.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+    s.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+    s.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+  }
+  return s;
+}
+
 // Split a UTF-8 string into individual characters.
 inline std::vector<std::string> split_chars(const std::string& s) {
   std::vector<std::string> out;
