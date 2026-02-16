@@ -312,12 +312,36 @@ static int run_alignment(int argc, char** argv) {
           // Compute normalized confidence score for this segment.
           // Normalize per-frame avg log_prob against random baseline:
           //   score=1.0 when log_prob=0 (perfect), score=0.0 when log_prob=-ln(V) (random guess)
+          // Skip punctuation/whitespace tokens — they were filtered during tokenization
+          // and carry no real alignment signal (only blank-frame noise).
+          auto has_content_char = [](const std::string& s) {
+            for (size_t p = 0; p < s.size();) {
+              uint32_t cp = utf8::to_codepoint(std::string_view(s.data() + p, s.size() - p));
+              size_t n = utf8::char_len(static_cast<unsigned char>(s[p]));
+              if ((cp >= 'a' && cp <= 'z') || (cp >= 'A' && cp <= 'Z') ||
+                  (cp >= '0' && cp <= '9') ||
+                  (cp >= 0x4E00 && cp <= 0x9FFF) ||   // CJK Ideographs
+                  (cp >= 0x3040 && cp <= 0x309F) ||   // Hiragana
+                  (cp >= 0x30A0 && cp <= 0x30FF) ||   // Katakana
+                  (cp >= 0xAC00 && cp <= 0xD7AF))     // Hangul
+                return true;
+              p += n;
+            }
+            return false;
+          };
           const float log_vocab = std::log(static_cast<float>(vocab.vocab_size()));
           std::vector<float> token_probs;
           token_probs.reserve(end_idx - start_idx + 1);
           for (size_t wi = start_idx; wi <= end_idx && wi < word_ts.size(); ++wi) {
             const auto& wt = word_ts[wi];
+            if (!has_content_char(wt.text)) continue;  // skip punctuation/whitespace
             float token_total_log_prob = wt.score;
+            // log_prob >= 0 is impossible for real alignments (log of probability is always negative).
+            // A value of exactly 0 means no frames contributed — treat as unaligned.
+            if (token_total_log_prob >= 0.0f) {
+              token_probs.push_back(0.0f);
+              continue;
+            }
             float token_duration = static_cast<float>(wt.end_sec - wt.start_sec);
             int n_frames = std::max(1, static_cast<int>(token_duration / 0.02f));
             float avg_log_prob = token_total_log_prob / static_cast<float>(n_frames);
