@@ -34,6 +34,22 @@ namespace fs = std::filesystem;
 
 // Emissions generation now lives in emissions.cpp; keep main minimal.
 
+// ---------------------------------------------------------------------------
+// Sub-batch alignment: handles CTC "targets too long" by recursive splitting
+// ---------------------------------------------------------------------------
+static void align_and_map_batch(
+    std::vector<SrtSegment>& segs,
+    const float* all_log_probs,  // full emissions buffer
+    int64_t frame_off,           // first frame index for this batch
+    int64_t frame_cnt,           // number of frames for this batch
+    int64_t classes,
+    int stride_ms,
+    const Vocab& vocab,
+    const PreprocessConfig& prep_config,
+    const ModelConfig& model_config,
+    Logger& log,
+    int depth = 0);
+
 // Forward declaration
 static int run_alignment(int argc, char** argv);
 
@@ -52,6 +68,211 @@ int main(int argc, char** argv) {
     std::cerr << "\n[ERROR] Unknown exception occurred\n";
     std::cerr << stacktrace::capture_string(0) << "\n";
     return 1;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// align_and_map_batch implementation
+// ---------------------------------------------------------------------------
+static void align_and_map_batch(
+    std::vector<SrtSegment>& segs,
+    const float* all_log_probs,
+    int64_t frame_off,
+    int64_t frame_cnt,
+    int64_t classes,
+    int stride_ms,
+    const Vocab& vocab,
+    const PreprocessConfig& prep_config,
+    const ModelConfig& model_config,
+    Logger& log,
+    int depth) {
+  if (segs.empty() || frame_cnt <= 0) return;
+
+  // 1. Build full_text from this batch's segments
+  std::string full_text;
+  for (size_t i = 0; i < segs.size(); ++i) {
+    std::string seg_text = segs[i].text;
+    for (char& ch : seg_text) { if (ch == '\n') ch = ' '; }
+    while (!seg_text.empty() && std::isspace(static_cast<unsigned char>(seg_text.front()))) seg_text.erase(seg_text.begin());
+    while (!seg_text.empty() && std::isspace(static_cast<unsigned char>(seg_text.back()))) seg_text.pop_back();
+    if (i) full_text.push_back(' ');
+    full_text += seg_text;
+  }
+
+  // 2. Preprocess and tokenize
+  const auto prep = preprocess_text(full_text, vocab, prep_config);
+  const auto& tokens_starred = prep.tokens_starred;
+  const auto& text_starred = prep.text_starred;
+
+  // 3. Build targets
+  const int64_t star_id = vocab.star_id;
+  std::vector<int64_t> targets;
+  targets.reserve(2000);
+  std::string joined;
+  for (const auto& t : tokens_starred) {
+    if (!joined.empty()) joined.push_back(' ');
+    joined += t;
+  }
+  size_t pos = 0;
+  while (pos < joined.size()) {
+    size_t next = joined.find(' ', pos);
+    if (next == std::string::npos) next = joined.size();
+    const auto piece = joined.substr(pos, next - pos);
+    if (!piece.empty()) {
+      if (piece == "<star>") {
+        targets.push_back(star_id);
+      } else {
+        auto it = vocab.token_to_id.find(piece);
+        if (it != vocab.token_to_id.end()) targets.push_back(it->second);
+      }
+    }
+    pos = next + 1;
+  }
+
+  // 4. Check CTC constraint: T >= L + R
+  const int64_t T = frame_cnt;
+  const int64_t L = int64_t(targets.size());
+  int64_t R = 0;
+  for (int64_t i = 1; i < L; ++i) {
+    if (targets[i] == targets[i - 1]) ++R;
+  }
+
+  if (T < L + R) {
+    // Need to split — can't fit all targets in available frames
+    if (segs.size() <= 1 || frame_cnt < 2) {
+      // Can't split further — skip alignment, keep original timestamps
+      log.info("[sub-batch] Cannot split further for CTC, skipping alignment");
+      return;
+    }
+
+    const size_t mid = segs.size() / 2;
+
+    // Determine frame split point from segment timestamps
+    const double t_end_first = segs[mid - 1].end_sec;
+    const double t_start_second = segs[mid].start_sec;
+    const double split_time = (t_end_first + t_start_second) / 2.0;
+    int64_t split_frame = static_cast<int64_t>(split_time * 1000.0 / stride_ms) - frame_off;
+    split_frame = std::max<int64_t>(1, std::min<int64_t>(split_frame, frame_cnt - 1));
+
+    {
+      std::ostringstream ss;
+      ss << "[sub-batch depth=" << depth << "] Splitting " << segs.size()
+         << " segments (T=" << T << " < L+R=" << (L + R)
+         << ") at seg " << mid << ", frame " << split_frame;
+      log.info(ss.str());
+    }
+
+    std::vector<SrtSegment> first_half(segs.begin(), segs.begin() + mid);
+    std::vector<SrtSegment> second_half(segs.begin() + mid, segs.end());
+
+    align_and_map_batch(first_half, all_log_probs, frame_off, split_frame,
+                        classes, stride_ms, vocab, prep_config, model_config, log, depth + 1);
+    align_and_map_batch(second_half, all_log_probs, frame_off + split_frame,
+                        frame_cnt - split_frame, classes, stride_ms, vocab, prep_config,
+                        model_config, log, depth + 1);
+
+    // Merge results back
+    for (size_t i = 0; i < mid; ++i) segs[i] = first_half[i];
+    for (size_t i = 0; i < second_half.size(); ++i) segs[mid + i] = second_half[i];
+    return;
+  }
+
+  // 5. Run forced alignment on the emission slice
+  const float* slice_ptr = all_log_probs + frame_off * classes;
+  std::vector<int64_t> path;
+  std::vector<float> scores;
+  forced_align(slice_ptr, T, classes, targets.data(), L, /*blank=*/0, path, scores);
+
+  // 6. Post-process: merge repeats → spans → word timestamps
+  std::unordered_map<int64_t, std::string> idx_to_token;
+  for (const auto& kv : vocab.token_to_id) idx_to_token[kv.second] = kv.first;
+  idx_to_token[star_id] = "<star>";
+
+  const auto merged = merge_repeats_str(path, idx_to_token);
+  const std::string blank_token = (model_config.type == ModelType::MMS_300M) ? "<blank>" : "<s>";
+  const auto spans = get_spans_str(tokens_starred, merged, blank_token);
+  auto word_ts = postprocess_results(text_starred, spans, stride_ms, scores);
+
+  // Apply time offset for this slice
+  const double time_offset = double(frame_off) * double(stride_ms) / 1000.0;
+  for (auto& w : word_ts) {
+    w.start_sec += time_offset;
+    w.end_sec += time_offset;
+  }
+
+  // 7. Map word timestamps back to SRT segments
+  const float log_vocab = std::log(static_cast<float>(vocab.vocab_size()));
+  size_t char_idx = 0;
+  for (auto& seg : segs) {
+    std::string seg_text = seg.text;
+    for (char& ch : seg_text) { if (ch == '\n') ch = ' '; }
+    while (!seg_text.empty() && std::isspace(static_cast<unsigned char>(seg_text.front()))) seg_text.erase(seg_text.begin());
+    while (!seg_text.empty() && std::isspace(static_cast<unsigned char>(seg_text.back()))) seg_text.pop_back();
+
+    const size_t num_chars = utf8::codepoint_count(seg_text);
+    if (num_chars == 0 || char_idx >= word_ts.size()) continue;
+
+    if (char_idx > 0 && char_idx < word_ts.size()) {
+      std::string t = word_ts[char_idx].text;
+      size_t l = 0;
+      while (l < t.size() && std::isspace(static_cast<unsigned char>(t[l]))) l++;
+      size_t r2 = t.size();
+      while (r2 > l && std::isspace(static_cast<unsigned char>(t[r2 - 1]))) r2--;
+      if (r2 <= l) char_idx += 1;
+    }
+    if (char_idx >= word_ts.size()) continue;
+
+    const size_t start_idx = char_idx;
+    seg.start_sec = word_ts[char_idx].start_sec;
+    const size_t end_idx = std::min(char_idx + num_chars - 1, word_ts.size() - 1);
+    seg.end_sec = word_ts[end_idx].end_sec;
+
+    // Confidence score
+    auto has_content_char = [&vocab](const std::string& s) {
+      const auto chars = utf8::split_chars(s);
+      for (const auto& ch : chars) {
+        if (vocab.token_to_id.count(ch)) return true;
+        if (ch.size() == 1 && ch[0] >= 'A' && ch[0] <= 'Z') {
+          std::string lower(1, static_cast<char>(ch[0] - 'A' + 'a'));
+          if (vocab.token_to_id.count(lower)) return true;
+        }
+      }
+      for (const auto& ch : chars) {
+        if (ch.size() == 1) {
+          char c = ch[0];
+          if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) return true;
+          continue;
+        }
+        uint32_t cp = utf8::to_codepoint(std::string_view(ch.data(), ch.size()));
+        if ((cp >= 0x2000 && cp <= 0x206F) || (cp >= 0x3000 && cp <= 0x303F) ||
+            (cp >= 0xFE30 && cp <= 0xFE6F) || (cp >= 0xFF01 && cp <= 0xFF0F) ||
+            (cp >= 0xFF1A && cp <= 0xFF20) || (cp >= 0xFF3B && cp <= 0xFF40) ||
+            (cp >= 0xFF5B && cp <= 0xFF65))
+          continue;
+        return true;
+      }
+      return false;
+    };
+    std::vector<float> token_probs;
+    token_probs.reserve(end_idx - start_idx + 1);
+    for (size_t wi = start_idx; wi <= end_idx && wi < word_ts.size(); ++wi) {
+      const auto& wt = word_ts[wi];
+      if (!has_content_char(wt.text)) continue;
+      float tlp = wt.score;
+      if (tlp >= 0.0f) { token_probs.push_back(0.0f); continue; }
+      float dur = static_cast<float>(wt.end_sec - wt.start_sec);
+      int nf = std::max(1, static_cast<int>(dur / 0.02f));
+      float avg = tlp / static_cast<float>(nf);
+      token_probs.push_back(std::max(0.0f, std::min(1.0f, 1.0f + avg / log_vocab)));
+    }
+    if (!token_probs.empty()) {
+      float sum = 0.0f;
+      for (float p : token_probs) sum += p;
+      seg.score = sum / static_cast<float>(token_probs.size());
+    } else {
+      seg.score = 0.0f;
+    }
+    char_idx = end_idx + 1;
   }
 }
 
@@ -160,23 +381,7 @@ static int run_alignment(int argc, char** argv) {
   }
   const std::vector<SrtSegment> original_segments_for_debug = args.debug ? srt_segments : std::vector<SrtSegment>{};
 
-  std::string full_text;
-  for (size_t i = 0; i < srt_segments.size(); ++i) {
-    std::string seg_text = srt_segments[i].text;
-    for (char& ch : seg_text) {
-      if (ch == '\n') ch = ' ';
-    }
-    while (!seg_text.empty() && std::isspace(static_cast<unsigned char>(seg_text.front()))) seg_text.erase(seg_text.begin());
-    while (!seg_text.empty() && std::isspace(static_cast<unsigned char>(seg_text.back()))) seg_text.pop_back();
-    if (i) full_text.push_back(' ');
-    full_text += seg_text;
-  }
-
-  std::vector<std::string> tokens_starred;
-  std::vector<std::string> text_starred;
-  std::string full_text_for_debug = full_text;
-
-  // Load vocab using unified interface (auto-detects JSON or TXT format)
+  // Load vocab
   const auto vocab = load_vocab(args.model_dir);
   {
     std::ostringstream ss;
@@ -184,283 +389,78 @@ static int run_alignment(int argc, char** argv) {
        << (vocab.format == VocabFormat::JSON ? "JSON" : "TXT") << ")";
     log.info(ss.str());
   }
+  if (vocab.star_id != emissions.classes - 1) {
+    throw std::runtime_error(
+        "vocab size mismatch: emissions classes=" + std::to_string(emissions.classes) + ", vocab+star=" +
+        std::to_string(vocab.star_id + 1) + " (check matching model + vocab file)");
+  }
 
-  // Preprocess text using new unified interface
+  // Run alignment with automatic sub-batching for CTC constraint violations
   PreprocessConfig prep_config;
   prep_config.romanize = romanize;
   prep_config.language = language;
-  const auto prep = preprocess_text(full_text, vocab, prep_config);
-  full_text_for_debug = prep.full_text;
-  tokens_starred = prep.tokens_starred;
-  text_starred = prep.text_starred;
-
-  const int64_t star_id = vocab.star_id;
-  if (star_id != emissions.classes - 1) {
-    throw std::runtime_error(
-        "vocab size mismatch: emissions classes=" + std::to_string(emissions.classes) + ", vocab+star=" +
-        std::to_string(star_id + 1) + " (check matching model + vocab file)");
-  }
-
-  std::vector<int64_t> targets;
-  targets.reserve(2000);
-  // Python: token_indices = [dictionary[c] for c in " ".join(tokens).split(" ") if c in dictionary]
-  std::string joined;
-  for (const auto& t : tokens_starred) {
-    if (!joined.empty()) joined.push_back(' ');
-    joined += t;
-  }
-  size_t pos = 0;
-  while (pos < joined.size()) {
-    size_t next = joined.find(' ', pos);
-    if (next == std::string::npos) next = joined.size();
-    const auto piece = joined.substr(pos, next - pos);
-    if (!piece.empty()) {
-      if (piece == "<star>") {
-        targets.push_back(star_id);
-      } else {
-        auto it = vocab.token_to_id.find(piece);
-        if (it != vocab.token_to_id.end()) targets.push_back(it->second);
-      }
-    }
-    pos = next + 1;
-  }
-
-  std::vector<int64_t> path;
-  std::vector<float> scores;
-  forced_align(
-      emissions.log_probs.data(),
-      emissions.frames,
-      emissions.classes,
-      targets.data(),
-      int64_t(targets.size()),
-      /*blank=*/0,
-      path,
-      scores);
-
-  // Build idx_to_token for spans from vocab.
-  std::unordered_map<int64_t, std::string> idx_to_token;
-  for (const auto& kv : vocab.token_to_id) {
-    idx_to_token[kv.second] = kv.first;
-  }
-  idx_to_token[star_id] = "<star>";
-
-  const auto segments = merge_repeats_str(path, idx_to_token);
-
-  // Determine blank token name based on model type
-  // MMS uses "<blank>", Omnilingual uses "<s>"
-  const std::string blank_token = (model_config.type == ModelType::MMS_300M) ? "<blank>" : "<s>";
 
   try {
-    const auto spans = get_spans_str(tokens_starred, segments, blank_token);
+    align_and_map_batch(srt_segments, emissions.log_probs.data(), 0, emissions.frames,
+                        emissions.classes, emissions.stride_ms, vocab, prep_config, model_config, log);
 
-    auto word_ts = postprocess_results(text_starred, spans, emissions.stride_ms, scores);
-
-      // Map word timestamps back to SRT segments (match Python align.py:map_timestamps_to_srt).
-        size_t char_idx = 0;
-        for (auto& seg : srt_segments) {
-          // Python uses:
-          //   seg_text = seg.text.replace("\n", " ").strip()
-          //   num_chars = len(seg_text)
-          //   space_offset = 1 if char_idx > 0 else 0
-          //   if space_offset>0 and word_timestamps[char_idx]["text"].strip()=="" then char_idx += 1
-          //   start_time = word_timestamps[char_idx]["start"]
-          //   end_idx = min(char_idx + num_chars - 1, len(word_timestamps)-1)
-          //   end_time = word_timestamps[end_idx]["end"]
-          //
-          // IMPORTANT: `num_chars` is counted in *Python characters* (Unicode codepoints),
-          // not bytes. Our `word_ts` tokens are UTF-8 strings, so we must count UTF-8 codepoints
-          // in `seg_text`, not `seg_text.size()` bytes.
-          std::string seg_text = seg.text;
-          for (char& ch : seg_text) {
-            if (ch == '\n') ch = ' ';
-          }
-          while (!seg_text.empty() && std::isspace(static_cast<unsigned char>(seg_text.front()))) {
-            seg_text.erase(seg_text.begin());
-          }
-          while (!seg_text.empty() && std::isspace(static_cast<unsigned char>(seg_text.back()))) {
-            seg_text.pop_back();
-          }
-
-          const size_t num_chars = utf8::codepoint_count(seg_text);
-          if (num_chars == 0 || char_idx >= word_ts.size()) {
-            continue;
-          }
-
-          if (char_idx > 0 && char_idx < word_ts.size()) {
-            // Python: if word_timestamps[char_idx]["text"].strip() == "": char_idx += 1
-            std::string t = word_ts[char_idx].text;
-            // trim ASCII whitespace for strip()
-            size_t l = 0;
-            while (l < t.size() && std::isspace(static_cast<unsigned char>(t[l]))) l++;
-            size_t r = t.size();
-            while (r > l && std::isspace(static_cast<unsigned char>(t[r - 1]))) r--;
-            if (r <= l) {
-              char_idx += 1;
-            }
-          }
-          if (char_idx >= word_ts.size()) {
-            continue;
-          }
-
-          const size_t start_idx = char_idx;
-          const auto& first = word_ts[char_idx];
-          const size_t end_idx = std::min(char_idx + num_chars - 1, word_ts.size() - 1);
-          const auto& last = word_ts[end_idx];
-          seg.start_sec = first.start_sec;
-          seg.end_sec = last.end_sec;
-
-          // Compute normalized confidence score for this segment.
-          // Normalize per-frame avg log_prob against random baseline:
-          //   score=1.0 when log_prob=0 (perfect), score=0.0 when log_prob=-ln(V) (random guess)
-          // Skip punctuation/whitespace tokens — they were filtered during tokenization
-          // and carry no real alignment signal (only blank-frame noise).
-          // Primary: vocab lookup (accurate for Omnilingual where vocab has native chars).
-          // Fallback: Unicode heuristic (for MMS where vocab has romanized a-z only).
-          auto has_content_char = [&vocab](const std::string& s) {
-            const auto chars = utf8::split_chars(s);
-            for (const auto& ch : chars) {
-              if (vocab.token_to_id.count(ch)) return true;
-              if (ch.size() == 1 && ch[0] >= 'A' && ch[0] <= 'Z') {
-                std::string lower(1, static_cast<char>(ch[0] - 'A' + 'a'));
-                if (vocab.token_to_id.count(lower)) return true;
-              }
-            }
-            // Fallback: treat non-ASCII non-punctuation as content (covers CJK in MMS)
-            for (const auto& ch : chars) {
-              if (ch.size() == 1) {
-                char c = ch[0];
-                if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))
-                  return true;
-                continue;
-              }
-              uint32_t cp = utf8::to_codepoint(std::string_view(ch.data(), ch.size()));
-              if ((cp >= 0x2000 && cp <= 0x206F) ||  // General Punctuation
-                  (cp >= 0x3000 && cp <= 0x303F) ||  // CJK Punctuation (、。「」etc.)
-                  (cp >= 0xFE30 && cp <= 0xFE6F) ||  // CJK Compatibility Forms
-                  (cp >= 0xFF01 && cp <= 0xFF0F) ||  // Fullwidth ！＂＃ etc.
-                  (cp >= 0xFF1A && cp <= 0xFF20) ||  // Fullwidth ：；＜ etc.
-                  (cp >= 0xFF3B && cp <= 0xFF40) ||  // Fullwidth ［＼］ etc.
-                  (cp >= 0xFF5B && cp <= 0xFF65))    // Fullwidth ｛｜｝ etc.
-                continue;
-              return true;  // Non-ASCII, non-punctuation → content
-            }
-            return false;
-          };
-          const float log_vocab = std::log(static_cast<float>(vocab.vocab_size()));
-          std::vector<float> token_probs;
-          token_probs.reserve(end_idx - start_idx + 1);
-          for (size_t wi = start_idx; wi <= end_idx && wi < word_ts.size(); ++wi) {
-            const auto& wt = word_ts[wi];
-            if (!has_content_char(wt.text)) continue;  // skip punctuation/whitespace
-            float token_total_log_prob = wt.score;
-            // log_prob >= 0 is impossible for real alignments (log of probability is always negative).
-            // A value of exactly 0 means no frames contributed — treat as unaligned.
-            if (token_total_log_prob >= 0.0f) {
-              token_probs.push_back(0.0f);
-              continue;
-            }
-            float token_duration = static_cast<float>(wt.end_sec - wt.start_sec);
-            int n_frames = std::max(1, static_cast<int>(token_duration / 0.02f));
-            float avg_log_prob = token_total_log_prob / static_cast<float>(n_frames);
-            float token_prob = std::max(0.0f, std::min(1.0f, 1.0f + avg_log_prob / log_vocab));
-            token_probs.push_back(token_prob);
-          }
-          // Final score is arithmetic mean of token probabilities
-          if (!token_probs.empty()) {
-            float prob_sum = 0.0f;
-            for (float p : token_probs) prob_sum += p;
-            seg.score = prob_sum / static_cast<float>(token_probs.size());
-          } else {
-            seg.score = 0.0f;
-          }
-
-          char_idx = end_idx + 1;
-        }
-
-        // Write output in JSON or SRT format
-        if (!args.json_output.empty()) {
-          if (args.json_output.string() == "-") {
-            // Write to stdout
-            std::cout << format_json_output(srt_segments, 0.0);
-          } else {
-            write_json_output(args.json_output, srt_segments, 0.0);
-            log.info(std::string("Wrote aligned JSON: ") + args.json_output.string());
-          }
-        } else {
-          write_srt_utf8(args.output, srt_segments);
-          log.info(std::string("Wrote aligned SRT: ") + args.output.string());
-        }
-
-      if (args.debug && !args.debug_dir.empty()) {
-        fs::create_directories(args.debug_dir);
-        using json = nlohmann::json;
-
-        // 01_original_segments.json
-        {
-          json j = json::array();
-          for (size_t i = 0; i < original_segments_for_debug.size(); ++i) {
-            const auto& seg = original_segments_for_debug[i];
-            j.push_back({{"index", i + 1}, {"start", seg.start_sec}, {"end", seg.end_sec},
-                          {"text", seg.text}, {"score", seg.score}});
-          }
-          std::ofstream f(args.debug_dir / "01_original_segments.json", std::ios::binary);
-          f << j.dump(2) << "\n";
-        }
-        // 02_full_text.txt
-        {
-          std::ofstream f(args.debug_dir / "02_full_text.txt", std::ios::binary);
-          f.write(full_text_for_debug.data(), std::streamsize(full_text_for_debug.size()));
-        }
-
-        // 03_tokens_starred.json / 04_text_starred.json
-        {
-          std::ofstream f3(args.debug_dir / "03_tokens_starred.json", std::ios::binary);
-          f3 << json(tokens_starred).dump(2) << "\n";
-          std::ofstream f4(args.debug_dir / "04_text_starred.json", std::ios::binary);
-          f4 << json(text_starred).dump(2) << "\n";
-        }
-
-        // 05_word_timestamps.json
-        {
-          json j = json::array();
-          for (const auto& w : word_ts) {
-            j.push_back({{"text", w.text}, {"start", w.start_sec}, {"end", w.end_sec}, {"score", w.score}});
-          }
-          std::ofstream f(args.debug_dir / "05_word_timestamps.json", std::ios::binary);
-          f << j.dump(2) << "\n";
-        }
-
-        // 06_aligned_segments.json
-        {
-          json j = json::array();
-          for (size_t i = 0; i < srt_segments.size(); ++i) {
-            const auto& seg = srt_segments[i];
-            j.push_back({{"index", i + 1}, {"start", seg.start_sec}, {"end", seg.end_sec},
-                          {"text", seg.text}, {"score", seg.score}});
-          }
-          std::ofstream f(args.debug_dir / "06_aligned_segments.json", std::ios::binary);
-          f << j.dump(2) << "\n";
-        }
-
-        // 00_summary.json
-        {
-          json j = {
-            {"audio_path", args.audio.string()},
-            {"srt_path", args.srt.string()},
-            {"language", language},
-            {"romanize", romanize},
-            {"audio_duration", audio_samples.size() / 16000.0},
-            {"num_segments", srt_segments.size()},
-            {"num_words", word_ts.size()},
-            {"processing_time", 0.0}
-          };
-          std::ofstream f(args.debug_dir / "00_summary.json", std::ios::binary);
-          f << j.dump(2) << "\n";
-        }
+    // Write output in JSON or SRT format
+    if (!args.json_output.empty()) {
+      if (args.json_output.string() == "-") {
+        std::cout << format_json_output(srt_segments, 0.0);
+      } else {
+        write_json_output(args.json_output, srt_segments, 0.0);
+        log.info(std::string("Wrote aligned JSON: ") + args.json_output.string());
       }
+    } else {
+      write_srt_utf8(args.output, srt_segments);
+      log.info(std::string("Wrote aligned SRT: ") + args.output.string());
+    }
+
+    if (args.debug && !args.debug_dir.empty()) {
+      fs::create_directories(args.debug_dir);
+      using json = nlohmann::json;
+
+      // 01_original_segments.json
+      {
+        json j = json::array();
+        for (size_t i = 0; i < original_segments_for_debug.size(); ++i) {
+          const auto& seg = original_segments_for_debug[i];
+          j.push_back({{"index", i + 1}, {"start", seg.start_sec}, {"end", seg.end_sec},
+                        {"text", seg.text}, {"score", seg.score}});
+        }
+        std::ofstream f(args.debug_dir / "01_original_segments.json", std::ios::binary);
+        f << j.dump(2) << "\n";
+      }
+      // 06_aligned_segments.json
+      {
+        json j = json::array();
+        for (size_t i = 0; i < srt_segments.size(); ++i) {
+          const auto& seg = srt_segments[i];
+          j.push_back({{"index", i + 1}, {"start", seg.start_sec}, {"end", seg.end_sec},
+                        {"text", seg.text}, {"score", seg.score}});
+        }
+        std::ofstream f(args.debug_dir / "06_aligned_segments.json", std::ios::binary);
+        f << j.dump(2) << "\n";
+      }
+      // 00_summary.json
+      {
+        json j = {
+          {"audio_path", args.audio.string()},
+          {"srt_path", args.srt.string()},
+          {"language", language},
+          {"romanize", romanize},
+          {"audio_duration", audio_samples.size() / 16000.0},
+          {"num_segments", srt_segments.size()},
+          {"processing_time", 0.0}
+        };
+        std::ofstream f(args.debug_dir / "00_summary.json", std::ios::binary);
+        f << j.dump(2) << "\n";
+      }
+    }
   } catch (const std::exception& e) {
     log.error(std::string("Alignment failed: ") + e.what());
-    throw;  // Re-throw to be caught by top-level handler with stack trace
+    throw;
   }
 
   return 0;
