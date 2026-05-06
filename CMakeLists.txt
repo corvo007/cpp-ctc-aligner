@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(cpp_ort_aligner VERSION 0.2.1 LANGUAGES CXX)
+project(cpp_ort_aligner VERSION 0.2.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 
@@ -56,6 +56,7 @@ add_executable(cpp-ort-aligner
   src/postprocess.cpp
   src/srt_io.cpp
   src/stacktrace.cpp
+  src/crash_handler.cpp
   src/text_preprocess.cpp
   src/vocab.cpp
   src/vocab_json.cpp

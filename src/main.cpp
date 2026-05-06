@@ -30,6 +30,7 @@ namespace fs = std::filesystem;
 #include "audio_decode.h"
 #include "kanji_pinyin.h"
 #include "stacktrace.h"
+#include "crash_handler.h"
 #include "utf8_utils.h"
 
 // Emissions generation now lives in emissions.cpp; keep main minimal.
@@ -54,6 +55,7 @@ static void align_and_map_batch(
 static int run_alignment(int argc, char** argv);
 
 int main(int argc, char** argv) {
+  crash_handler::install();
   try {
     return run_alignment(argc, argv);
   } catch (const Ort::Exception& e) {
